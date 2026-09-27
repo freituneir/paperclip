@@ -4,7 +4,7 @@ This is `freituneir/paperclip`, a fork of [`paperclipai/paperclip`](https://gith
 for a self-hosted Paperclip on Proxmox (VM 100, `https://paperclip.drpt.sh`).
 It is **upstream release `d554c47` plus the commits listed below** — nothing else.
 
-Build from the **`homelab`** branch. Each change also lives alone on its own
+Build from the **`homelab`** branch (or **`claude-transparency`**, which is `homelab` plus change 4). Each change also lives alone on its own
 branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
 
 ## How this version differs from upstream
@@ -14,6 +14,7 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
 | 1 | `fix-tool-approval-500` | Approving a high-risk tool action from the **chat card** before its Inbox approval returns a clear 409 ("formal approval required") instead of a red **internal server error** | `server/src/errors.ts`, `server/src/middleware/error-handler.ts`, `server/src/services/tool-gateway.ts` |
 | 2 | `dashboard-agents-per-agent` | The dashboard **Agents** panel shows **one card per agent** (its live run, else latest run) instead of one card per run | `ui/src/components/ActiveAgentsPanel.tsx`, `ui/src/pages/Dashboard.tsx` |
 | 3 | `fix-claude-setup-token` | The Claude subscription connection accepts a **one-year `claude setup-token` token**, so agents stop failing ~12 h after signing in; adds a helper script | `server/src/services/local-ai-credentials.ts`, `scripts/homelab/claude-setup-token-login.sh` |
+| 4 | `claude-transparency` (on top of `homelab`) | Agents run as **full Claude Code**: a persistent company **Claude Home** (native MCP servers, plugins, skills, subagents, slash commands, hooks, settings, CLAUDE.md), full model/effort/permission controls, and a **launch manifest** on every run showing what Claude got and whether each MCP server is **Claude Code (ungoverned)** or **Paperclip (governed)** | `packages/adapters/claude-local/**`, `patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch`, `server/src/{routes,services}/claude-home.ts`, `ui/src/pages/ClaudeHome.tsx`, `ui/src/components/claude/**`, agent config + transcript UI; design in `doc/plans/2026-09-27-claude-code-transparency-*.md` |
 | — | `homelab` only | This file | `HOMELAB.md` |
 
 ### 1. Chat-card approval returns 409, not 500
@@ -84,6 +85,65 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
    then paste the printed `sk-ant-oat01-…` token at the hidden prompt. **Never
    paste the token into chats or tickets.**
 4. Back in Paperclip, click **Connect**. The token lasts one year.
+
+### 4. Full Claude Code through Paperclip (Claude Home)
+
+- **Symptom:** Paperclip felt like a thinner harness than Claude Code. Native
+  MCP servers, plugins, user settings and CLAUDE.md never reached agents, the
+  model/effort lists were fixed, and nothing showed what a run really had.
+- **Causes:** managed AI connections gave each run an empty temp
+  `CLAUDE_CONFIG_DIR`; the ACP client sent `settingSources: ["project","local"]`
+  (no user settings); the CLI lane forced `--strict-mcp-config`.
+- **Change:** each company has a persistent **Claude Home**, a normal
+  `CLAUDE_CONFIG_DIR`. In this deployment it lives at
+  `/paperclip/instances/default/companies/<companyId>/claude-home` on the
+  `paperclip-data` volume, so no compose change is needed.
+  `PAPERCLIP_CLAUDE_HOME_ROOT` overrides the root. Local runs use it with the
+  user, project and local setting sources on both engines. The managed AI
+  connection still supplies the credential via env. If the home's
+  `settings.json` sets `apiKeyHelper` or auth env keys, the run fails with
+  `ai_connection_incompatible` instead of billing another account.
+- **Per agent** (agent → Configuration → *Claude Code*):
+  - Claude Home: company or isolated (the old behavior).
+  - Native MCP on/off.
+  - Permission mode.
+  - Fallback model.
+  - Allowed and disallowed tools.
+  - A settings-JSON overlay.
+  - Effort up to `max`.
+  - Extra args, now honored on ACP too.
+- **Visibility:**
+  - Every run's Invocation card shows a **launch manifest** listing every MCP
+    server with its origin badge: *Claude Code* (native, not governed by
+    Paperclip approvals) or *Paperclip · governed*.
+  - Agent → Tools shows the same **effective setup** before a run.
+  - The **Claude Home** page edits `settings.json`, CLAUDE.md and MCP servers,
+    and lists plugins, skills, subagents, commands and hooks. It can also
+    **adopt** a native http/sse server into a governed Paperclip connection.
+- **Native editing:** the real CLI is the power editor. Plugins, OAuth MCP
+  logins and `claude mcp add` all write straight into the home:
+  ```
+  ssh -t hassan@192.168.0.73 "cd /opt/paperclip && docker compose exec -it -u node paperclip sh -lc 'CLAUDE_CONFIG_DIR=/paperclip/instances/default/companies/<companyId>/claude-home claude'"
+  ```
+  An interactive session there needs its own login (`/login` once; it is stored
+  in the home). Agent runs keep using the managed connection.
+- **Take over a run:** the run page shows
+  `cd '<cwd>' && CLAUDE_CONFIG_DIR='<home>' claude --resume <session>`. Run it
+  inside the container (prefix as above) to continue the agent's session in real
+  Claude Code. Sessions now persist in the home instead of a deleted temp dir.
+- **Security note:** native MCP servers bypass Paperclip's approvals and audit,
+  and stdio servers run inside the Paperclip container. That is the parked
+  "agents share the container" issue (`FUTURE-PROBLEMS.md`). Use the per-agent
+  *Native MCP* switch, or *Adopt into Paperclip*, for anything risky.
+- **First run after upgrading:** existing ACP agents start one fresh session,
+  because the session fingerprint includes the new env.
+- **Tests:**
+  - `packages/adapters/claude-local/src/server/{claude-home,native-options,launch-manifest,acp.native}.test.ts`
+  - `server/src/__tests__/claude-home-routes.test.ts`
+  - `server/src/__tests__/claude-local-execute.test.ts`
+  - `ui/src/components/claude/*.test.tsx`
+  - `ui/src/adapters/claude-local/config-fields.test.tsx`
+  - the task-chat and transcript tests (TodoWrite checklist, subagent labels)
 
 ## Building and deploying
 
