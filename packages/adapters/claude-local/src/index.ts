@@ -27,8 +27,11 @@ export const label = "Claude Code";
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @anthropic-ai/claude-code";
 
 export const models = [
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+  { id: "claude-opus-5-5[1m]", label: "Claude Opus 5.5 (1M context)" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8" },
   { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
+  { id: "claude-sonnet-5[1m]", label: "Claude Sonnet 5 (1M context)" },
   { id: "claude-fable-5-1", label: "Claude Fable 5.1" },
   { id: "claude-fable-5", label: "Claude Fable 5" },
   { id: "claude-mythos-5", label: "Claude Mythos 5" },
@@ -38,6 +41,10 @@ export const models = [
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6" },
   { id: "claude-sonnet-4-5", label: "Claude Sonnet 4.5" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
+  { id: "opus", label: "Alias: latest Opus" },
+  { id: "sonnet", label: "Alias: latest Sonnet" },
+  { id: "haiku", label: "Alias: latest Haiku" },
+  { id: "opusplan", label: "Alias: Opus for planning, Sonnet for execution" },
 ];
 
 export const agentConfigurationDoc = `# claude_local agent configuration
@@ -49,13 +56,20 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file injected at runtime
 - model (string, optional): Claude model id. Missing or blank defaults to ${DEFAULT_CLAUDE_LOCAL_MODEL} in both CLI and ACP, including existing agents. Explicit model IDs and ANTHROPIC_MODEL overrides are preserved. Bedrock/Vertex without an explicit model retain their provider default.
-- effort (string, optional): reasoning effort passed via --effort (low|medium|high)
+- effort (string, optional): reasoning effort passed via --effort (low|medium|high|xhigh|max)
 - chrome (boolean, optional): pass --chrome when running Claude
 - promptTemplate (string, optional): run prompt template
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
 - command (string, optional): defaults to "claude"
 - extraArgs (string[], optional): additional CLI args
+- claudeHome (string, optional, default "company"): "company" points Claude at the persistent company Claude Home (CLAUDE_CONFIG_DIR = $PAPERCLIP_CLAUDE_HOME_ROOT/<companyId>, or <instanceRoot>/companies/<companyId>/claude-home) and loads user, project, and local settings, so native MCP servers, plugins, skills, subagents, slash commands, hooks, and sessions persist. "isolated" keeps the legacy per-run behavior. Local execution targets only; an explicit CLAUDE_CONFIG_DIR in env wins.
+- nativeMcp (string, optional, default "enabled"): "disabled" passes --strict-mcp-config so only Paperclip-governed MCP servers load. Native (Claude Home, project .mcp.json, plugin) MCP servers are not governed by Paperclip approvals.
+- claudePermissionMode (string, optional, default ""): bypassPermissions|auto|acceptEdits|dontAsk|plan|manual. When set on a local target it replaces the dangerouslySkipPermissions behavior with --permission-mode. Remote targets keep the curated --allowedTools list.
+- fallbackModel (string, optional): passed via --fallback-model
+- allowedTools (string[], optional): passed via --allowedTools
+- disallowedTools (string[], optional): passed via --disallowedTools
+- settingsOverlay (object, optional): Claude settings merged on top of the Claude Home settings for this agent (written to a per-run file passed with --settings; local targets only). With a managed AI connection it must not define apiKeyHelper or auth env keys.
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats

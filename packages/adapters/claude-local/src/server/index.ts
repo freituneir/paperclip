@@ -1,6 +1,27 @@
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
 export * from "./acp.js";
 export { getConfigSchema } from "./config-schema.js";
+export {
+  ensureClaudeHomeDir,
+  findHomeAuthConflicts,
+  readClaudeHomeInventory,
+  readProjectMcpServers,
+  redactClaudeSecrets,
+  resolveClaudeHomeDir,
+  restoreRedactedSecrets,
+  seedClaudeHomeCredentials,
+  summarizeMcpServer,
+} from "./claude-home.js";
+export {
+  buildClaudeCliNativeArgs,
+  buildClaudeSdkOptions,
+  CLAUDE_HOME_SETTING_SOURCES,
+  extraArgsToSdkRecord,
+  parseClaudeNativeOptions,
+  settingsOverlayWithPermission,
+} from "./native-options.js";
+export type { ClaudeNativeOptions } from "./native-options.js";
+export { buildClaudeLaunchManifest, NATIVE_MCP_DISABLED_WARNING } from "./launch-manifest.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";

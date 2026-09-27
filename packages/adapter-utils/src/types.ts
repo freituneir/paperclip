@@ -156,6 +156,8 @@ export interface AdapterInvocationMeta {
   prompt?: string;
   promptMetrics?: Record<string, number>;
   context?: Record<string, unknown>;
+  /** Claude Code launch manifest (see ClaudeLaunchManifest in @paperclipai/shared). */
+  launchManifest?: Record<string, unknown>;
 }
 
 export interface AdapterRuntimeMcpServer {

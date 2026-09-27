@@ -390,6 +390,8 @@ describe("claude execute", () => {
           runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
           config: {
             engine: "cli",
+            // Legacy strict-MCP behavior; the company Claude Home is covered below.
+            claudeHome: "isolated",
             command: commandPath,
             cwd: workspace,
             env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
@@ -427,6 +429,125 @@ describe("claude execute", () => {
       expect(zero.mcpConfigContents).toBeNull();
       expect(alpha.mcpConfigPath).toContain("/agents/agent-alpha/");
     } finally {
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("points local runs at the company Claude Home and records a launch manifest", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-home-exec-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const homeRoot = path.join(root, "claude-homes");
+    const previousHomeRoot = process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+    process.env.PAPERCLIP_CLAUDE_HOME_ROOT = homeRoot;
+    try {
+      const servers: AdapterRuntimeMcpServer[] = [{
+        name: "alpha",
+        url: "https://paperclip.example/api/tool-gateway/gateways/alpha/mcp?token=secret",
+        token: "alpha-token",
+        connectionId: "connection-alpha",
+      }];
+      const run = async (runId: string, extraConfig: Record<string, unknown>) => {
+        const metas: Array<Record<string, unknown>> = [];
+        await execute({
+          runId,
+          agent: { id: "agent-home", companyId: "co-1", name: "Home", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+          runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+          config: {
+            engine: "cli",
+            command: commandPath,
+            cwd: workspace,
+            env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath },
+            promptTemplate: "Do work.",
+            ...extraConfig,
+          },
+          runtimeMcp: { getServers: () => servers },
+          context: {},
+          authToken: "tok",
+          onLog: async () => {},
+          onMeta: async (meta) => { metas.push(meta as unknown as Record<string, unknown>); },
+        });
+        return { capture: JSON.parse(await fs.readFile(capturePath, "utf8")), meta: metas[0]! };
+      };
+
+      const homeDir = path.join(homeRoot, "co-1");
+      const enabled = await run("run-home", { claudePermissionMode: "acceptEdits", fallbackModel: "claude-sonnet-5" });
+      expect(enabled.capture.claudeConfigDir).toBe(homeDir);
+      expect(enabled.capture.argv).toEqual(expect.arrayContaining([
+        "--setting-sources", "user,project,local",
+        "--permission-mode", "acceptEdits",
+        "--fallback-model", "claude-sonnet-5",
+        "--mcp-config",
+      ]));
+      expect(enabled.capture.argv).not.toContain("--strict-mcp-config");
+      expect(enabled.capture.argv).not.toContain("--dangerously-skip-permissions");
+      const settingsIndex = enabled.capture.argv.indexOf("--settings");
+      expect(JSON.parse(await fs.readFile(enabled.capture.argv[settingsIndex + 1], "utf8"))).toEqual({
+        permissions: { defaultMode: "acceptEdits" },
+      });
+      expect((enabled.meta.env as Record<string, string>).CLAUDE_CONFIG_DIR).toBe(homeDir);
+      expect(enabled.meta.commandNotes).toContain(`Claude Home: ${homeDir} (native MCP enabled)`);
+      const manifest = enabled.meta.launchManifest as Record<string, any>;
+      expect(manifest).toMatchObject({
+        version: 1,
+        engine: "cli",
+        claudeHome: { mode: "company", dir: homeDir },
+        permission: { mode: "acceptEdits", source: "claudePermissionMode" },
+        nativeMcp: "enabled",
+      });
+      expect(manifest.mcpServers).toEqual([
+        expect.objectContaining({ name: "alpha", origin: "paperclip", governed: true }),
+      ]);
+      expect(JSON.stringify(manifest)).not.toContain("secret");
+
+      const disabled = await run("run-home-strict", { nativeMcp: "disabled" });
+      expect(disabled.capture.argv).toContain("--strict-mcp-config");
+      expect(disabled.capture.argv).toContain("--dangerously-skip-permissions");
+    } finally {
+      if (previousHomeRoot === undefined) delete process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+      else process.env.PAPERCLIP_CLAUDE_HOME_ROOT = previousHomeRoot;
+      restore();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails a managed AI connection run when Claude Home settings define auth keys", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-home-conflict-"));
+    const { workspace, commandPath, capturePath, restore } = await setupExecuteEnv(root);
+    const homeRoot = path.join(root, "claude-homes");
+    const previousHomeRoot = process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+    process.env.PAPERCLIP_CLAUDE_HOME_ROOT = homeRoot;
+    try {
+      await fs.mkdir(path.join(homeRoot, "co-1"), { recursive: true });
+      await fs.writeFile(
+        path.join(homeRoot, "co-1", "settings.json"),
+        JSON.stringify({ apiKeyHelper: "/bin/echo", env: { ANTHROPIC_API_KEY: "sk-home" } }),
+      );
+      const managedConfigDir = await fs.mkdtemp(path.join(root, "managed-"));
+      const result = await execute({
+        runId: "run-conflict",
+        agent: { id: "agent-home", companyId: "co-1", name: "Home", adapterType: "claude_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          managedAiConnection: true,
+          env: { PAPERCLIP_TEST_CAPTURE_PATH: capturePath, CLAUDE_CONFIG_DIR: managedConfigDir },
+          promptTemplate: "Do work.",
+        },
+        context: {},
+        authToken: "tok",
+        onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("ai_connection_incompatible");
+      expect(result.errorMessage).toContain("apiKeyHelper, env.ANTHROPIC_API_KEY");
+      expect(result.errorMessage).not.toContain("sk-home");
+      await expect(fs.access(capturePath)).rejects.toThrow();
+    } finally {
+      if (previousHomeRoot === undefined) delete process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+      else process.env.PAPERCLIP_CLAUDE_HOME_ROOT = previousHomeRoot;
       restore();
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -524,6 +645,8 @@ describe("claude execute", () => {
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          // The company Claude Home adds its own command note; this test is about instruction notes.
+          claudeHome: "isolated",
           command: commandPath,
           cwd: workspace,
           env: {},
@@ -555,6 +678,8 @@ describe("claude execute", () => {
         runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          // The company Claude Home adds its own command note; this test is about instruction notes.
+          claudeHome: "isolated",
           command: commandPath,
           cwd: workspace,
           env: {},
@@ -588,6 +713,8 @@ describe("claude execute", () => {
         runtime: { sessionId: "11111111-1111-4111-8111-111111111111", sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
           engine: "cli",
+          // The company Claude Home adds its own command note; this test is about instruction notes.
+          claudeHome: "isolated",
           command: commandPath,
           cwd: workspace,
           env: {
@@ -792,6 +919,8 @@ describe("claude execute", () => {
         },
         config: {
           engine: "cli",
+          // Legacy config-dir inheritance; the company Claude Home overrides CLAUDE_CONFIG_DIR.
+          claudeHome: "isolated",
           command: "claude",
           cwd: workspace,
           env: {

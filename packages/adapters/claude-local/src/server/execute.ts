@@ -93,6 +93,22 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
+import {
+  ensureClaudeHomeDir,
+  seedClaudeHomeCredentials,
+  findHomeAuthConflicts,
+  readClaudeHomeInventory,
+  readProjectMcpServers,
+  resolveClaudeHomeDir,
+} from "./claude-home.js";
+import {
+  buildClaudeCliNativeArgs,
+  CLAUDE_HOME_SETTING_SOURCES,
+  parseClaudeNativeOptions,
+  settingsOverlayWithPermission,
+} from "./native-options.js";
+import { buildClaudeLaunchManifest } from "./launch-manifest.js";
+import type { ClaudeHomeInventory, ClaudeLaunchManifest } from "@paperclipai/shared";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -482,6 +498,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+
+  // Claude Home: a persistent, company-scoped CLAUDE_CONFIG_DIR for local
+  // targets. It wins over a managed AI connection's per-run temp config dir,
+  // but an operator-set CLAUDE_CONFIG_DIR in the agent env is respected.
+  const native = parseClaudeNativeOptions(config);
+  const operatorClaudeConfigDir = hasExplicitClaudeConfigDir && !config.managedAiConnection;
+  const claudeHomeActive =
+    native.claudeHome === "company" && !executionTargetIsRemote && !operatorClaudeConfigDir;
+  const manifestWarnings: string[] = [];
+  if (native.claudeHome === "company" && executionTargetIsRemote) {
+    manifestWarnings.push("Claude Home applies only to local execution targets; this remote run uses its own Claude config.");
+  } else if (native.claudeHome === "company" && operatorClaudeConfigDir) {
+    manifestWarnings.push("CLAUDE_CONFIG_DIR is set in the agent env, so the company Claude Home was not applied.");
+  }
+  let claudeHomeDir: string | null = null;
+  let claudeHomeInventory: ClaudeHomeInventory | null = null;
+  if (claudeHomeActive) {
+    claudeHomeDir = resolveClaudeHomeDir(process.env, agent.companyId);
+    await ensureClaudeHomeDir(claudeHomeDir);
+    if (!config.managedAiConnection) {
+      const sourceConfigDir = resolveSharedClaudeConfigDir(process.env);
+      if (await seedClaudeHomeCredentials(claudeHomeDir, sourceConfigDir)) {
+        await onLog("stdout", `[paperclip] Copied Claude login from ${sourceConfigDir} into Claude Home ${claudeHomeDir}.\n`);
+      }
+    }
+    env.CLAUDE_CONFIG_DIR = claudeHomeDir;
+    loggedEnv.CLAUDE_CONFIG_DIR = claudeHomeDir;
+    claudeHomeInventory = await readClaudeHomeInventory(claudeHomeDir);
+  }
+  if (config.managedAiConnection) {
+    const homeConflicts = findHomeAuthConflicts(claudeHomeInventory?.settings ?? null);
+    const overlayConflicts = findHomeAuthConflicts(native.settingsOverlay);
+    if (homeConflicts.length > 0 || overlayConflicts.length > 0) {
+      const errorMessage = homeConflicts.length > 0
+        ? `Claude Home settings.json defines ${homeConflicts.join(", ")}, which would override the selected AI connection. Remove them in Claude Home.`
+        : `The agent settings overlay defines ${overlayConflicts.join(", ")}, which would override the selected AI connection. Remove them from the agent configuration.`;
+      await onLog("stderr", `[paperclip] ${errorMessage}\n`);
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorCode: "ai_connection_incompatible",
+        errorMessage,
+        resultJson: {
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        },
+      };
+    }
+  }
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
@@ -565,7 +630,53 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     servers: runtimeMcpServers,
   });
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
-  const sharedClaudeConfigDir = config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env);
+  const sharedClaudeConfigDir = claudeHomeDir
+    ?? (config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env));
+  // Native options: the permission mode and settings overlay apply only to
+  // local targets. Remote targets keep the curated --allowedTools list.
+  const localPermissionMode = executionTargetIsRemote ? null : native.permissionMode;
+  const cliNativeOptions = { ...native, permissionMode: localPermissionMode };
+  if (executionTargetIsRemote && native.permissionMode) {
+    manifestWarnings.push(`claudePermissionMode "${native.permissionMode}" is not applied on remote execution targets.`);
+  }
+  if (executionTargetIsRemote && native.settingsOverlay) {
+    manifestWarnings.push("settingsOverlay is not applied on remote execution targets.");
+  }
+  const runSettingsOverlay = executionTargetIsRemote ? null : settingsOverlayWithPermission(cliNativeOptions);
+  const runSettingsFilePath = runSettingsOverlay
+    ? path.join(claudeRuntimeStateDir, "runs", runId, "settings.json")
+    : null;
+  if (runSettingsFilePath && runSettingsOverlay) {
+    await fs.mkdir(path.dirname(runSettingsFilePath), { recursive: true });
+    await fs.writeFile(runSettingsFilePath, JSON.stringify(runSettingsOverlay), { mode: 0o600 });
+  }
+  const legacyPermissionArgs = localPermissionMode
+    ? []
+    : buildClaudeExecutionPermissionArgs({
+        dangerouslySkipPermissions,
+        targetIsRemote: executionTargetIsRemote,
+        localProcessUid: process.getuid?.() ?? null,
+      });
+  const manifestPermission: ClaudeLaunchManifest["permission"] = localPermissionMode
+    ? { mode: localPermissionMode, source: "claudePermissionMode" }
+    : legacyPermissionArgs[0] === "--allowedTools"
+    ? { mode: "allowlist", source: executionTargetIsRemote ? "remote_allowlist" : "dangerouslySkipPermissions" }
+    : legacyPermissionArgs[0] === "--dangerously-skip-permissions"
+    ? { mode: "bypassPermissions", source: "dangerouslySkipPermissions" }
+    : { mode: "default", source: "dangerouslySkipPermissions" };
+  // Legacy (isolated/remote): strict only when Paperclip MCP servers exist.
+  // Claude Home: strict only when native MCP is disabled for the agent.
+  const useStrictMcpConfig = claudeHomeActive
+    ? native.nativeMcp === "disabled"
+    : runtimeMcpServers.length > 0;
+  const manifestSettingSources = claudeHomeActive
+    ? [...CLAUDE_HOME_SETTING_SOURCES]
+    : config.managedAiConnection
+    ? ["user"]
+    : [...CLAUDE_HOME_SETTING_SOURCES];
+  const manifestProjectMcp = useStrictMcpConfig || executionTargetIsRemote
+    ? []
+    : await readProjectMcpServers(cwd);
   const networkScope = parseLocalProcessNetworkScope(config.networkScope);
   const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
   const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -578,6 +689,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             { path: path.join(path.dirname(sharedClaudeConfigDir), ".claude.json"), access: "rw" },
             { path: promptBundle.addDir, access: "ro" },
             { path: localMcpConfigDir, access: "ro" },
+            ...(runSettingsFilePath ? [{ path: runSettingsFilePath, access: "ro" as const }] : []),
           ],
           extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
@@ -882,13 +994,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     attemptInstructionsFilePath: string | undefined,
   ) => {
     const args = ["--print", "--output-format", "stream-json", "--verbose"];
-    if (config.managedAiConnection) args.push("--setting-sources", "user");
-    if (resumeSessionId) args.push("--resume", resumeSessionId);
-    args.push(...buildClaudeExecutionPermissionArgs({
-      dangerouslySkipPermissions,
-      targetIsRemote: executionTargetIsRemote,
-      localProcessUid: process.getuid?.() ?? null,
+    if (config.managedAiConnection && !claudeHomeActive) args.push("--setting-sources", "user");
+    args.push(...buildClaudeCliNativeArgs(cliNativeOptions, {
+      settingsFilePath: runSettingsFilePath,
+      homeActive: claudeHomeActive,
     }));
+    if (resumeSessionId) args.push("--resume", resumeSessionId);
+    args.push(...legacyPermissionArgs);
     if (chrome) args.push("--chrome");
     // For Bedrock: only pass --model when the ID is a Bedrock-native identifier
     // (e.g. "us.anthropic.*" or ARN). Anthropic-style IDs like "claude-opus-4-6" are invalid
@@ -904,9 +1016,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (attemptInstructionsFilePath && !resumeSessionId) {
       args.push("--append-system-prompt-file", attemptInstructionsFilePath);
     }
-    if (runtimeMcpServers.length > 0) {
-      args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
-    }
+    if (runtimeMcpServers.length > 0) args.push("--mcp-config", effectiveMcpConfigPath);
+    if (useStrictMcpConfig) args.push("--strict-mcp-config");
     args.push("--add-dir", effectivePromptBundleAddDir);
     if (extraArgs.length > 0) args.push(...extraArgs);
     return args;
@@ -947,9 +1058,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (runtimeMcpServers.length > 0) {
       commandNotes.push(
-        `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`,
+        useStrictMcpConfig
+          ? `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from strict config ${effectiveMcpConfigPath}.`
+          : `Using ${runtimeMcpServers.length} Paperclip-managed MCP server(s) from ${effectiveMcpConfigPath} alongside native Claude Code MCP servers.`,
       );
     }
+    if (claudeHomeDir) {
+      commandNotes.push(`Claude Home: ${claudeHomeDir} (native MCP ${native.nativeMcp})`);
+    }
+    const launchManifest = buildClaudeLaunchManifest({
+      engine: "cli",
+      model: passesConfiguredModel ? model : null,
+      effort: effectiveEffort || null,
+      options: cliNativeOptions,
+      permission: manifestPermission,
+      homeDir: claudeHomeDir,
+      inventory: claudeHomeInventory,
+      paperclipMcp: runtimeMcpServers.map(({ name, url }) => ({ name, url })),
+      projectMcp: manifestProjectMcp,
+      paperclipSkills: mountableSkillEntries.map((entry) => entry.key),
+      instructionsPath: instructionsFilePath || null,
+      instructionsDelivery: attemptInstructionsFilePath && !resumeSessionId ? "system_prompt_append" : "none",
+      extraArgs,
+      settingSources: manifestSettingSources,
+      cwd: effectiveExecutionCwd,
+      sessionId: resumeSessionId,
+      warnings: manifestWarnings,
+    });
     if (onMeta) {
       await onMeta({
         adapterType: "claude_local",
@@ -961,6 +1096,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         prompt,
         promptMetrics,
         context,
+        launchManifest: launchManifest as unknown as Record<string, unknown>,
       });
     }
 
@@ -1334,7 +1470,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[paperclip] Claude resume session "${sessionId}" ${reason}; retrying with a fresh session.\n`,
       );
       if (sessionErrorKind === "poisoned" && !executionTargetIsRemote) {
-        const claudeConfigDir = resolveSharedClaudeConfigDir(effectiveEnv);
+        const claudeConfigDir = claudeHomeDir ?? resolveSharedClaudeConfigDir(effectiveEnv);
         // Mirrors Claude Code's project-dir encoding: non-alphanumeric chars become "-"; existing hyphens pass through.
         const encodedCwd = effectiveExecutionCwd.replace(/[^a-zA-Z0-9-]/g, "-");
         const poisonedJsonlPath = path.join(claudeConfigDir, "projects", encodedCwd, `${sessionId}.jsonl`);
