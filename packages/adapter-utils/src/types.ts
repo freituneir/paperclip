@@ -160,6 +160,29 @@ export interface AdapterInvocationMeta {
   launchManifest?: Record<string, unknown>;
 }
 
+/** A provider permission request surfaced to the host (ACP `session/request_permission`). */
+export interface AdapterPermissionRequest {
+  toolCallId: string | null;
+  /** Provider tool name, e.g. "Bash" (from `_meta.claudeCode.toolName`). */
+  toolName: string | null;
+  title: string | null;
+  /** ACP tool kind (read, edit, execute, ...). */
+  kind: string | null;
+  rawInput: unknown;
+  options: { optionId: string; name: string; kind: string }[];
+}
+
+export type AdapterPermissionOutcome =
+  | "allow_once"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always"
+  | "cancel";
+
+export interface AdapterPermissionDecision {
+  outcome: AdapterPermissionOutcome;
+}
+
 export interface AdapterRuntimeMcpServer {
   name: string;
   url: string;
@@ -221,6 +244,16 @@ export interface AdapterExecutionContext {
     remoteExecution?: Record<string, unknown> | null;
   };
   runtimeMcp?: AdapterRuntimeMcpAccess;
+  /**
+   * Ask a human to decide a provider permission request (e.g. a Claude Code
+   * `ask` rule). Resolves `undefined` to let the adapter fall back to its
+   * configured permission mode. Present only when the host can reach a human
+   * (e.g. the run belongs to a task).
+   */
+  requestPermission?: (
+    request: AdapterPermissionRequest,
+    opts: { signal: AbortSignal; waitMs: number },
+  ) => Promise<AdapterPermissionDecision | undefined>;
   runtimeTools?: AdapterRuntimeToolAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
