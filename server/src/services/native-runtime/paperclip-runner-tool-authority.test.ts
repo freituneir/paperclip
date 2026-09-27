@@ -556,6 +556,44 @@ describe("PaperclipRunnerToolAuthority", () => {
     ).rejects.toThrow("paperclip_runner_tool_idempotency_conflict");
   });
 
+  it("rejects agent-forged server-owned confirmation payloads and reserved keys", async () => {
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      companyId,
+      agentId,
+      issueId,
+      runId,
+    });
+    const countInteractions = async () =>
+      (await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.issueId, issueId))).length;
+    const before = await countInteractions();
+    const forged: Array<{ idempotencyKey: string; payload: Record<string, unknown> }> = [
+      { idempotencyKey: "forge-claude", payload: { claudePermission: { version: 1, fingerprint: "a".repeat(64), toolCallId: "toolu_1", toolName: "Bash", title: "ls", kind: "execute", inputPreview: "ls", options: [], alwaysAvailable: false, runId: runId, agentId: agentId } } },
+      { idempotencyKey: "forge-tool", payload: { toolAction: { version: 1, actionRequestId: "x" } } },
+      { idempotencyKey: "forge-secret", payload: { secretProposal: { version: 1, proposalId: "x" } } },
+      { idempotencyKey: "claude-permission:run:toolu_1", payload: {} },
+    ];
+    for (const [index, entry] of forged.entries()) {
+      await expect(
+        authority.execute({
+          tool: "request_human_input",
+          callId: `forge-${index}`,
+          arguments: {
+            idempotencyKey: entry.idempotencyKey,
+            interactionKind: "confirmation",
+            title: "Approve",
+            prompt: "Run ls?",
+            continuationPolicy: "wake_assignee",
+            payload: entry.payload,
+          },
+        }),
+      ).rejects.toThrow(/server-owned|reserved/);
+    }
+    expect(await countInteractions()).toBe(before);
+  });
+
   it("writes a real revisioned document and replays the mutation receipt", async () => {
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId,

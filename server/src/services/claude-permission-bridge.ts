@@ -347,7 +347,7 @@ export function createDbClaudePermissionStore(db: Db): ClaudePermissionStore {
           },
         },
         { agentId: input.agentId, runId: input.runId },
-        { supersedePendingSiblingInteractions: false },
+        { supersedePendingSiblingInteractions: false, serverOwnedPayload: "claudePermission" },
       );
       return toRef(interaction as unknown as Parameters<typeof toRef>[0]);
     },

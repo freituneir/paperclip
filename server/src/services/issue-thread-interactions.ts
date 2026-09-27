@@ -141,10 +141,67 @@ type InteractionActor = {
   resolutionDetails?: Record<string, unknown>;
 };
 
+/**
+ * Payload keys that only server-owned flows may attach to a confirmation card.
+ * Their presence grants special resolution semantics (tool-action execution,
+ * secret binding, Claude permission grants), so no caller-supplied input may
+ * carry them unless the creating flow opts in via `serverOwnedPayload`.
+ */
+export const SERVER_OWNED_INTERACTION_PAYLOAD_KEYS = [
+  "toolAction",
+  "secretProposal",
+  "claudePermission",
+] as const;
+export type ServerOwnedInteractionPayloadKey =
+  (typeof SERVER_OWNED_INTERACTION_PAYLOAD_KEYS)[number];
+
+/**
+ * Idempotency prefix reserved for the Claude permission bridge. Kept literal
+ * here (mirrors CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX) to avoid an import cycle.
+ */
+const RESERVED_CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX = "claude-permission:";
+
 type CreateInteractionOptions = {
   /** Keep independently owned pending cards actionable. Internal runtime bridges use this. */
   supersedePendingSiblingInteractions?: boolean;
+  /**
+   * Internal, server-owned flows only: the single server-owned payload key this
+   * card is allowed to carry. Never derive this from request/plugin/agent input.
+   */
+  serverOwnedPayload?: ServerOwnedInteractionPayloadKey;
 };
+
+function assertNoForgedServerOwnedInteractionMetadata(
+  input: unknown,
+  serverOwnedPayload: ServerOwnedInteractionPayloadKey | undefined,
+) {
+  const raw =
+    input && typeof input === "object"
+      ? (input as { payload?: unknown; idempotencyKey?: unknown })
+      : {};
+  const payload =
+    raw.payload && typeof raw.payload === "object"
+      ? (raw.payload as Record<string, unknown>)
+      : {};
+  for (const key of SERVER_OWNED_INTERACTION_PAYLOAD_KEYS) {
+    if (payload[key] !== undefined && serverOwnedPayload !== key) {
+      throw unprocessable(
+        `payload.${key} is server-owned metadata and cannot be supplied when creating an interaction`,
+      );
+    }
+  }
+  if (
+    typeof raw.idempotencyKey === "string" &&
+    raw.idempotencyKey
+      .trim()
+      .startsWith(RESERVED_CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX) &&
+    serverOwnedPayload !== "claudePermission"
+  ) {
+    throw unprocessable(
+      `Idempotency keys starting with "${RESERVED_CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX}" are reserved for server-owned Claude permission requests`,
+    );
+  }
+}
 
 type InteractionWakeup = (
   agentId: string,
@@ -3311,6 +3368,10 @@ export function issueThreadInteractionService(
       actor: InteractionActor,
       options: CreateInteractionOptions = {},
     ) => {
+      assertNoForgedServerOwnedInteractionMetadata(
+        input,
+        options.serverOwnedPayload,
+      );
       const data = normalizeCreateInteractionInput(
         createIssueThreadInteractionSchema.parse(input),
       );

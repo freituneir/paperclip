@@ -2392,6 +2392,7 @@ export function createToolGatewayService(
         },
       },
       { agentId: input.session.agentId },
+      { serverOwnedPayload: "toolAction" },
     );
 
     // Sign the row only while it is still pending. A concurrent matching call can

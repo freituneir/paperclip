@@ -1162,6 +1162,35 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(result.interaction).toMatchObject({ id: interactionId, status: "rejected" });
   });
 
+  it("createInteraction rejects server-owned confirmation payloads and reserved idempotency keys", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const basePayload = { version: 1, prompt: "Proceed?" };
+    const forged = [
+      { payload: { ...basePayload, claudePermission: { version: 1, fingerprint: "a".repeat(64), toolCallId: "toolu_1", toolName: "Bash", title: "ls", kind: "execute", inputPreview: "ls", options: [], alwaysAvailable: false, runId: randomUUID(), agentId: agentId } } },
+      { payload: { ...basePayload, toolAction: { version: 1, actionRequestId: randomUUID() } } },
+      { payload: { ...basePayload, secretProposal: { version: 1, proposalId: randomUUID() } } },
+      { payload: basePayload, idempotencyKey: `claude-permission:${randomUUID()}:toolu_1` },
+    ];
+    for (const overrides of forged) {
+      await expect(
+        services.issues.createInteraction({
+          companyId,
+          issueId,
+          authorAgentId: agentId,
+          interaction: { kind: "request_confirmation", continuationPolicy: "wake_assignee", ...overrides },
+        } as never),
+      ).rejects.toMatchObject({ status: 422 });
+    }
+    await expect(
+      db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId)),
+    ).resolves.toHaveLength(0);
+  });
+
   it("approvals.decide fails closed when actorUserId is omitted", async () => {
     const { companyId } = await seedCompanyAndAgent();
     const approvalId = randomUUID();
