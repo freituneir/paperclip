@@ -8,7 +8,9 @@ import type {
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
+  AdapterInvocationMeta,
 } from "@paperclipai/adapter-utils";
+import type { ClaudeLaunchManifest } from "@paperclipai/shared";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
@@ -36,7 +38,10 @@ import {
   asBoolean,
   asNumber,
   asString,
+  asStringArray,
+  isPaperclipSkillSourceMissing,
   parseObject,
+  readPaperclipRuntimeSkillEntries,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   materializeRemoteClaudeConfig,
@@ -54,6 +59,16 @@ import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
 import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { readProjectMcpServers, resolveClaudeHomeDir } from "./claude-home.js";
+import {
+  claudeHomeFailureResult,
+  prepareClaudeHomeRun,
+  resolveClaudeHomeActivation,
+  type ClaudeHomeRunPreparation,
+} from "./claude-home-run.js";
+import { buildClaudeSdkOptions, parseClaudeNativeOptions, type ClaudeNativeOptions } from "./native-options.js";
+import { buildClaudeLaunchManifest } from "./launch-manifest.js";
+import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -119,9 +134,73 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+export const PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV = "PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON";
+/** What `claude-agent-acp` passes as settingSources when nothing overrides it (acpx `_meta`). */
+const ACP_DEFAULT_SETTING_SOURCES = ["project", "local"];
+
+export interface ClaudeAcpConfigOptions {
+  /** The run's company. Without it the Claude Home is never applied. */
+  companyId?: string;
+  /** True for remote execution targets, which never get the Claude Home. */
+  remote?: boolean;
+  /** Whether Paperclip-managed MCP servers are attached to this run. */
+  hasPaperclipMcp?: boolean;
+}
+
+function claudeAcpExtraArgs(config: Record<string, unknown>): string[] {
+  const fromExtraArgs = asStringArray(config.extraArgs);
+  return fromExtraArgs.length > 0 ? fromExtraArgs : asStringArray(config.args);
+}
+
+/**
+ * The env the patched `claude-agent-acp` reads to mirror the CLI lane's native
+ * options: `CLAUDE_CONFIG_DIR` (company Claude Home) and
+ * `PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON` (Claude Agent SDK options). Local targets
+ * only. Without an active Claude Home (isolated agents, or an operator-set
+ * CLAUDE_CONFIG_DIR) only the non-home options (fallback model, permission
+ * mode, settings overlay, tool lists, extra args) are forwarded, and MCP stays
+ * non-strict as it always was on ACP. The JSON is omitted when empty, so an
+ * unconfigured isolated agent keeps its legacy env byte-for-byte.
+ */
+function buildClaudeAcpNativeEnv(
+  config: Record<string, unknown>,
+  env: Record<string, unknown>,
+  options: ClaudeAcpConfigOptions,
+): Record<string, string> {
+  if (options.remote || !options.companyId) return {};
+  const native = parseClaudeNativeOptions(config);
+  const activation = resolveClaudeHomeActivation({
+    native,
+    targetIsRemote: false,
+    configEnv: env,
+    managedAiConnection: Boolean(config.managedAiConnection),
+  });
+  const extraArgs = claudeAcpExtraArgs(config);
+  const nativeEnv: Record<string, string> = {};
+  let sdkOptions: Record<string, unknown>;
+  if (activation.active) {
+    nativeEnv.CLAUDE_CONFIG_DIR = resolveClaudeHomeDir(process.env, options.companyId);
+    sdkOptions = buildClaudeSdkOptions(native, {
+      homeActive: true,
+      hasPaperclipMcp: Boolean(options.hasPaperclipMcp),
+      extraArgs,
+    });
+  } else {
+    sdkOptions = buildClaudeSdkOptions(
+      { ...native, nativeMcp: "enabled" },
+      { homeActive: false, hasPaperclipMcp: false, extraArgs },
+    );
+  }
+  if (Object.keys(sdkOptions).length > 0) {
+    nativeEnv[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV] = JSON.stringify(sdkOptions);
+  }
+  return nativeEnv;
+}
+
 export function buildClaudeAcpConfig(
   config: Record<string, unknown>,
   inheritedEnv: Record<string, unknown> = {},
+  options: ClaudeAcpConfigOptions = {},
 ): Record<string, unknown> {
   const env = parseObject(config.env);
   const model = resolveClaudeModel(config.model, { ...inheritedEnv, ...env });
@@ -138,12 +217,16 @@ export function buildClaudeAcpConfig(
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  const nativeEnv = buildClaudeAcpNativeEnv(config, env, options);
+  const hasNativeEnv = Object.keys(nativeEnv).length > 0;
 
   return {
     ...config,
     model,
     // ACP reads ANTHROPIC_MODEL at startup; keep it aligned with CLI precedence.
-    ...(model ? { env: { ...env, ANTHROPIC_MODEL: model } } : {}),
+    ...(model || hasNativeEnv
+      ? { env: { ...env, ...(model ? { ANTHROPIC_MODEL: model } : {}), ...nativeEnv } }
+      : {}),
     agent: "claude",
     mode,
     permissionMode,
@@ -355,6 +438,94 @@ export function mapClaudeAcpAuthErrorCode(
   return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
 }
 
+function readSdkOptionsFromAcpConfig(acpConfig: Record<string, unknown>): Record<string, unknown> {
+  const raw = parseObject(acpConfig.env)[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV];
+  if (typeof raw !== "string") return {};
+  try {
+    return parseObject(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+async function resolvePaperclipSkillNames(config: Record<string, unknown>): Promise<string[]> {
+  try {
+    const entries = await readPaperclipRuntimeSkillEntries(config, moduleDir);
+    const desired = new Set(resolveClaudeDesiredSkillNames(config, entries));
+    return entries
+      .filter((entry) => desired.has(entry.key) && !isPaperclipSkillSourceMissing(entry))
+      .map((entry) => entry.key);
+  } catch {
+    return [];
+  }
+}
+
+/** Launch manifest for an ACP run (engine "acp"), built from the resolved ACP config. */
+async function buildClaudeAcpLaunchManifest(input: {
+  config: Record<string, unknown>;
+  acpConfig: Record<string, unknown>;
+  targetIsRemote: boolean;
+  homeRun: ClaudeHomeRunPreparation;
+  paperclipMcp: { name: string; url: string }[];
+  cwd: string | null;
+}): Promise<ClaudeLaunchManifest> {
+  const { config, acpConfig, targetIsRemote, homeRun } = input;
+  const native = parseClaudeNativeOptions(config);
+  const sdkOptions = readSdkOptionsFromAcpConfig(acpConfig);
+  const warnings = [...homeRun.warnings];
+  const extraArgs = targetIsRemote ? [] : claudeAcpExtraArgs(config);
+  let options: ClaudeNativeOptions = native;
+  if (targetIsRemote) {
+    const ignored = [
+      native.permissionMode ? "claudePermissionMode" : null,
+      native.settingsOverlay ? "settingsOverlay" : null,
+      native.fallbackModel ? "fallbackModel" : null,
+      native.allowedTools.length > 0 ? "allowedTools" : null,
+      native.disallowedTools.length > 0 ? "disallowedTools" : null,
+      claudeAcpExtraArgs(config).length > 0 ? "extraArgs" : null,
+    ].filter((key): key is string => key !== null);
+    if (ignored.length > 0) {
+      warnings.push(`${ignored.join(", ")} ${ignored.length === 1 ? "is" : "are"} not applied on remote ACP execution targets.`);
+    }
+    options = {
+      ...native,
+      permissionMode: null,
+      settingsOverlay: null,
+      fallbackModel: null,
+      allowedTools: [],
+      disallowedTools: [],
+    };
+  }
+  const permission: ClaudeLaunchManifest["permission"] = options.permissionMode
+    ? { mode: options.permissionMode, source: "claudePermissionMode" }
+    : { mode: asString(acpConfig.permissionMode, DEFAULT_ACP_ENGINE_PERMISSION_MODE), source: "acp_default" };
+  const settingSources = Array.isArray(sdkOptions.settingSources)
+    ? sdkOptions.settingSources.filter((value): value is string => typeof value === "string")
+    : ACP_DEFAULT_SETTING_SOURCES;
+  const projectMcp = sdkOptions.strictMcpConfig === true || targetIsRemote || !input.cwd
+    ? []
+    : await readProjectMcpServers(input.cwd).catch(() => []);
+  const instructionsPath = asString(config.instructionsFilePath, "").trim() || null;
+  return buildClaudeLaunchManifest({
+    engine: "acp",
+    model: asString(acpConfig.model, "") || null,
+    effort: asString(config.effort, "") || null,
+    options,
+    permission,
+    homeDir: homeRun.homeDir,
+    inventory: homeRun.inventory,
+    paperclipMcp: input.paperclipMcp,
+    projectMcp,
+    paperclipSkills: await resolvePaperclipSkillNames(config),
+    instructionsPath,
+    instructionsDelivery: instructionsPath ? "user_prompt_prefix" : "none",
+    extraArgs,
+    settingSources,
+    cwd: input.cwd,
+    warnings,
+  });
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -368,9 +539,52 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
+    const targetIsRemote = target?.kind === "remote";
+    // Claude Home: same activation, login carry-over, and managed-connection
+    // auth-conflict rules as the CLI lane (claude-home-run.ts).
+    const homeRun = await prepareClaudeHomeRun({
+      native: parseClaudeNativeOptions(ctx.config),
+      targetIsRemote,
+      configEnv: parseObject(ctx.config.env),
+      managedAiConnection: Boolean(ctx.config.managedAiConnection),
+      companyId: ctx.agent.companyId,
+      onLog: ctx.onLog,
+    });
+    if (homeRun.failure) return claudeHomeFailureResult(homeRun.failure);
+    const paperclipMcp = (ctx.runtimeMcp?.getServers() ?? []).map(({ name, url }) => ({ name, url }));
+    const acpConfig = buildClaudeAcpConfig(ctx.config, targetIsRemote ? {} : process.env, {
+      companyId: ctx.agent.companyId,
+      remote: targetIsRemote,
+      hasPaperclipMcp: paperclipMcp.length > 0,
+    });
+    const onMeta = ctx.onMeta;
     const result = await currentExecutor({
       ...ctx,
-      config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
+      config: acpConfig,
+      ...(onMeta
+        ? {
+            onMeta: async (meta: AdapterInvocationMeta) => {
+              let launchManifest: ClaudeLaunchManifest | null = null;
+              try {
+                launchManifest = await buildClaudeAcpLaunchManifest({
+                  config: ctx.config,
+                  acpConfig,
+                  targetIsRemote,
+                  homeRun,
+                  paperclipMcp,
+                  cwd: meta.cwd ?? null,
+                });
+              } catch {
+                // The manifest is descriptive only; never fail a run over it.
+              }
+              await onMeta(
+                launchManifest
+                  ? { ...meta, launchManifest: launchManifest as unknown as Record<string, unknown> }
+                  : meta,
+              );
+            },
+          }
+        : {}),
     });
     return mapClaudeAcpAuthErrorCode(result);
   };

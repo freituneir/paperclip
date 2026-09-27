@@ -93,14 +93,8 @@ import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
 import { buildClaudeExecutionPermissionArgs } from "./permissions.js";
-import {
-  ensureClaudeHomeDir,
-  seedClaudeHomeCredentials,
-  findHomeAuthConflicts,
-  readClaudeHomeInventory,
-  readProjectMcpServers,
-  resolveClaudeHomeDir,
-} from "./claude-home.js";
+import { readProjectMcpServers } from "./claude-home.js";
+import { claudeHomeFailureResult, prepareClaudeHomeRun } from "./claude-home-run.js";
 import {
   buildClaudeCliNativeArgs,
   CLAUDE_HOME_SETTING_SOURCES,
@@ -108,7 +102,7 @@ import {
   settingsOverlayWithPermission,
 } from "./native-options.js";
 import { buildClaudeLaunchManifest } from "./launch-manifest.js";
-import type { ClaudeHomeInventory, ClaudeLaunchManifest } from "@paperclipai/shared";
+import type { ClaudeLaunchManifest } from "@paperclipai/shared";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
   createClaudeAcpExecutor,
@@ -502,51 +496,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Claude Home: a persistent, company-scoped CLAUDE_CONFIG_DIR for local
   // targets. It wins over a managed AI connection's per-run temp config dir,
   // but an operator-set CLAUDE_CONFIG_DIR in the agent env is respected.
+  // Shared with the ACP lane (see claude-home-run.ts).
   const native = parseClaudeNativeOptions(config);
-  const operatorClaudeConfigDir = hasExplicitClaudeConfigDir && !config.managedAiConnection;
-  const claudeHomeActive =
-    native.claudeHome === "company" && !executionTargetIsRemote && !operatorClaudeConfigDir;
-  const manifestWarnings: string[] = [];
-  if (native.claudeHome === "company" && executionTargetIsRemote) {
-    manifestWarnings.push("Claude Home applies only to local execution targets; this remote run uses its own Claude config.");
-  } else if (native.claudeHome === "company" && operatorClaudeConfigDir) {
-    manifestWarnings.push("CLAUDE_CONFIG_DIR is set in the agent env, so the company Claude Home was not applied.");
-  }
-  let claudeHomeDir: string | null = null;
-  let claudeHomeInventory: ClaudeHomeInventory | null = null;
-  if (claudeHomeActive) {
-    claudeHomeDir = resolveClaudeHomeDir(process.env, agent.companyId);
-    await ensureClaudeHomeDir(claudeHomeDir);
-    if (!config.managedAiConnection) {
-      const sourceConfigDir = resolveSharedClaudeConfigDir(process.env);
-      if (await seedClaudeHomeCredentials(claudeHomeDir, sourceConfigDir)) {
-        await onLog("stdout", `[paperclip] Copied Claude login from ${sourceConfigDir} into Claude Home ${claudeHomeDir}.\n`);
-      }
-    }
+  const claudeHomeRun = await prepareClaudeHomeRun({
+    native,
+    targetIsRemote: executionTargetIsRemote,
+    configEnv,
+    managedAiConnection: Boolean(config.managedAiConnection),
+    companyId: agent.companyId,
+    onLog,
+  });
+  const claudeHomeActive = claudeHomeRun.active;
+  const manifestWarnings: string[] = [...claudeHomeRun.warnings];
+  const claudeHomeDir = claudeHomeRun.homeDir;
+  const claudeHomeInventory = claudeHomeRun.inventory;
+  if (claudeHomeDir) {
     env.CLAUDE_CONFIG_DIR = claudeHomeDir;
     loggedEnv.CLAUDE_CONFIG_DIR = claudeHomeDir;
-    claudeHomeInventory = await readClaudeHomeInventory(claudeHomeDir);
   }
-  if (config.managedAiConnection) {
-    const homeConflicts = findHomeAuthConflicts(claudeHomeInventory?.settings ?? null);
-    const overlayConflicts = findHomeAuthConflicts(native.settingsOverlay);
-    if (homeConflicts.length > 0 || overlayConflicts.length > 0) {
-      const errorMessage = homeConflicts.length > 0
-        ? `Claude Home settings.json defines ${homeConflicts.join(", ")}, which would override the selected AI connection. Remove them in Claude Home.`
-        : `The agent settings overlay defines ${overlayConflicts.join(", ")}, which would override the selected AI connection. Remove them from the agent configuration.`;
-      await onLog("stderr", `[paperclip] ${errorMessage}\n`);
-      return {
-        exitCode: 1,
-        signal: null,
-        timedOut: false,
-        errorCode: "ai_connection_incompatible",
-        errorMessage,
-        resultJson: {
-          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-        },
-      };
-    }
-  }
+  if (claudeHomeRun.failure) return claudeHomeFailureResult(claudeHomeRun.failure);
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),

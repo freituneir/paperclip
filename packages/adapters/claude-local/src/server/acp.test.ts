@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 
@@ -83,7 +83,14 @@ const originalEnv: Record<string, string | undefined> = {
   PAPERCLIP_HOME: process.env.PAPERCLIP_HOME,
   PAPERCLIP_INSTANCE_ID: process.env.PAPERCLIP_INSTANCE_ID,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  PAPERCLIP_CLAUDE_HOME_ROOT: process.env.PAPERCLIP_CLAUDE_HOME_ROOT,
 };
+
+// Local ACP runs now activate the company Claude Home; keep it (and the
+// one-time login carry-over) inside a temp root instead of the real instance.
+beforeEach(async () => {
+  process.env.PAPERCLIP_CLAUDE_HOME_ROOT = await makeTempRoot("paperclip-claude-acp-home-root-");
+});
 
 function setNodeVersion(version: string): void {
   Object.defineProperty(process, "version", {

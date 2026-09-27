@@ -1,8 +1,47 @@
 diff --git a/dist/acp-agent.js b/dist/acp-agent.js
-index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef14627011e02b30 100644
+index 0214a509eb5e7b777a69e4e34637941c275d27b1..c9ab53011af4b3613ff042dda32cb283e743b0be 100644
 --- a/dist/acp-agent.js
 +++ b/dist/acp-agent.js
-@@ -2922,9 +2922,19 @@ export class ClaudeAcpAgent {
+@@ -34,6 +34,38 @@ import { MODE_CONFIG_ID, SessionModeManager } from "./session-mode.js";
+ export const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
+ const execFileAsync = promisify(execFile);
+ const MAX_INLINE_FAILURE_TITLE_LENGTH = 256;
++// Paperclip: Claude Agent SDK options carried from the claude_local adapter in
++// PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON (company Claude Home setting sources,
++// settings overlay, strict MCP, fallback model, tool lists, extra CLI args).
++// Only an allowlisted set of keys is honored; absence or bad JSON yields {}.
++const PAPERCLIP_CLAUDE_SDK_OPTION_KEYS = [
++    "settingSources",
++    "settings",
++    "strictMcpConfig",
++    "fallbackModel",
++    "allowedTools",
++    "disallowedTools",
++    "extraArgs",
++];
++function readPaperclipClaudeSdkOptions() {
++    const raw = process.env.PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON;
++    if (!raw)
++        return {};
++    try {
++        const parsed = JSON.parse(raw);
++        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
++            return {};
++        const picked = {};
++        for (const key of PAPERCLIP_CLAUDE_SDK_OPTION_KEYS) {
++            if (parsed[key] !== undefined && parsed[key] !== null)
++                picked[key] = parsed[key];
++        }
++        return picked;
++    }
++    catch {
++        return {};
++    }
++}
+ /** Claude CLI emits this synthetic result when an interrupted cycle ends on
+  *  queued user input before producing any assistant content. It is a hand-off
+  *  marker, not the outcome of the replacement prompt that may already be
+@@ -2922,9 +2954,19 @@ export class ClaudeAcpAgent {
                                              amount: message.total_cost_usd,
                                              currency: "USD",
                                          },
@@ -25,10 +64,51 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
                                      },
                                  });
                              }
-@@ -5311,6 +5321,10 @@ export class ClaudeAcpAgent {
+@@ -5202,7 +5244,9 @@ export class ClaudeAcpAgent {
+                 };
+             }
+         }
+-        const permissionMode = resolvePermissionMode(settingsManager.getSettings().permissions?.defaultMode, this.logger);
++        const paperclipSdk = readPaperclipClaudeSdkOptions();
++        const permissionMode = resolvePermissionMode(paperclipSdk.settings?.permissions?.defaultMode ??
++            settingsManager.getSettings().permissions?.defaultMode, this.logger);
+         const initialPermissionMode = creationOpts.permissionMode ?? permissionMode;
+         // Extract options from _meta if provided
+         const sessionMeta = params._meta;
+@@ -5269,13 +5313,18 @@ export class ClaudeAcpAgent {
+         // into the query.
+         const resolvedProvider = this.resolveProviderConfig();
+         const providerEnv = createEnvForProvider(resolvedProvider);
+-        const configuredSettings = userProvidedOptions?.settings ??
+-            (modelConfig
+-                ? {
+-                    ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
+-                    ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
+-                }
+-                : undefined);
++        const modelConfigSettings = modelConfig
++            ? {
++                ...(modelConfig.modelOverrides && { modelOverrides: modelConfig.modelOverrides }),
++                ...(modelConfig.availableModels && { availableModels: modelConfig.availableModels }),
++            }
++            : undefined;
++        // Paperclip settings overlay merges over the model config settings; the
++        // provider-routing block below still wins on `env` and `apiKeyHelper`.
++        const paperclipSettings = paperclipSdk.settings && typeof paperclipSdk.settings === "object"
++            ? { ...modelConfigSettings, ...paperclipSdk.settings }
++            : undefined;
++        const configuredSettings = userProvidedOptions?.settings ?? paperclipSettings ?? modelConfigSettings;
+         // Claude Code applies env from settings.json after the subprocess env. Put
+         // an active ACP route in the programmatic settings tier too so user/project
+         // settings cannot silently restore a different ANTHROPIC_BASE_URL.
+@@ -5311,6 +5360,14 @@ export class ClaudeAcpAgent {
              settingSources: ["user", "project", "local"],
              ...(thinking !== undefined && { thinking }),
              ...userProvidedOptions,
++            // Paperclip adapter options override acpx `_meta` (e.g. its
++            // settingSources ["project","local"]); settings, extraArgs and
++            // disallowedTools are merged below instead.
++            ...(({ settings: _s, extraArgs: _e, disallowedTools: _d, ...rest }) => rest)(paperclipSdk),
 +            // Paperclip Runner owns the complete session context. Its isolated
 +            // user root contains only assigned skills; project/local settings
 +            // would reintroduce host prompts, plugins, skills, and MCP servers.
@@ -36,7 +116,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
              ...(settings && { settings }),
              env,
              // Override certain fields that must be controlled by ACP
-@@ -5318,7 +5332,9 @@ export class ClaudeAcpAgent {
+@@ -5318,7 +5375,9 @@ export class ClaudeAcpAgent {
              includePartialMessages: true,
              forwardSubagentText,
              mcpServers: {
@@ -47,7 +127,7 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
-@@ -5329,6 +5345,16 @@ export class ClaudeAcpAgent {
+@@ -5329,6 +5388,16 @@ export class ClaudeAcpAgent {
              allowDangerouslySkipPermissions: ALLOW_BYPASS,
              permissionMode: initialPermissionMode,
              canUseTool: this.canUseTool(sessionId),
@@ -64,3 +144,19 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
              // Forward MCP elicitation requests onto ACP elicitation. Only attached
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
+@@ -5351,9 +5420,14 @@ export class ClaudeAcpAgent {
+             pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_EXECUTABLE ?? (await claudeCliPath()),
+             extraArgs: {
+                 ...userProvidedOptions?.extraArgs,
++                ...paperclipSdk.extraArgs,
+                 "replay-user-messages": "",
+             },
+-            disallowedTools: [...(userProvidedOptions?.disallowedTools || []), ...disallowedTools],
++            disallowedTools: [
++                ...(userProvidedOptions?.disallowedTools || []),
++                ...(paperclipSdk.disallowedTools || []),
++                ...disallowedTools,
++            ],
+             tools,
+             hooks: {
+                 ...userProvidedOptions?.hooks,
