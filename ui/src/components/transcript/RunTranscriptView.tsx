@@ -14,6 +14,12 @@ import {
   User,
 } from "lucide-react";
 import { toolTaxonomy } from "../task-chat/tool-taxonomy";
+import {
+  parseTodoListInput,
+  subagentToolLabel,
+  summarizeTodoProgress,
+} from "../task-chat/tool-input-shapes";
+import { TodoChecklist } from "../task-chat/TodoChecklist";
 
 /** Family glyph for a tool block/row; the taxonomy falls back to Wrench. */
 function ToolFamilyIcon({ name, className }: { name: string; className?: string }) {
@@ -256,8 +262,26 @@ function mergeToolInput(previous: unknown, incoming: unknown): unknown {
   return incoming;
 }
 
+/** Row label: subagent spawns read "Subagent · Explore — Map adapter". */
+function toolBlockLabel(name: string, input: unknown): string {
+  return subagentToolLabel(name, input) ?? humanizeLabel(name);
+}
+
+/** Tool input body: a TodoWrite plan renders as a checklist, not JSON. */
+function ToolInputPayload({ input }: { input: unknown }) {
+  const todos = parseTodoListInput(input);
+  if (todos) return <TodoChecklist todos={todos} />;
+  return (
+    <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) text-foreground/80">
+      {formatToolPayload(input) || "<empty>"}
+    </pre>
+  );
+}
+
 function summarizeToolInput(name: string, input: unknown, density: TranscriptDensity): string {
   const compactMax = density === "compact" ? 72 : 120;
+  const todos = parseTodoListInput(input);
+  if (todos) return truncate(summarizeTodoProgress(todos), compactMax);
   if (typeof input === "string") {
     const normalized = isCommandTool(name, input) ? stripWrappedShell(input) : compactWhitespace(input);
     return truncate(normalized, compactMax);
@@ -525,7 +549,12 @@ function groupToolBlocks(blocks: TranscriptBlock[]): TranscriptBlock[] {
   };
 
   for (const block of blocks) {
-    if (block.type === "tool" && !isCommandTool(block.name, block.input)) {
+    // A TodoWrite plan stays a standalone card so its checklist is visible.
+    if (
+      block.type === "tool" &&
+      !isCommandTool(block.name, block.input) &&
+      !parseTodoListInput(block.input)
+    ) {
       if (!groupTs) groupTs = block.ts;
       groupEndTs = block.endTs ?? block.ts;
       pending.push({
@@ -1036,6 +1065,7 @@ function TranscriptToolCard({
   const [open, setOpen] = useState(block.status === "error" || Boolean(decision?.pendingAction || decision?.denialReason));
   const compact = density === "compact";
   const parsedResult = parseStructuredToolResult(block.result);
+  const todos = parseTodoListInput(block.input);
   const statusLabel =
     block.status === "running"
       ? "Running"
@@ -1079,7 +1109,7 @@ function TranscriptToolCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-              {block.name}
+              {toolBlockLabel(block.name, block.input)}
             </span>
             <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)", statusTone)}>
               {statusLabel}
@@ -1089,6 +1119,7 @@ function TranscriptToolCard({
           <div className={cn("mt-1 break-words text-foreground/80", compact ? "text-xs" : "text-sm")}>
             {summary}
           </div>
+          {todos ? <TodoChecklist todos={todos} className="mt-2" /> : null}
           <ToolDecisionInlineDetail decision={decision} />
         </div>
         <button
@@ -1108,9 +1139,7 @@ function TranscriptToolCard({
                 <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
                   Input
                 </div>
-                <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) text-foreground/80">
-                  {formatToolPayload(block.input) || "<empty>"}
-                </pre>
+                <ToolInputPayload input={block.input} />
               </div>
               <div>
                 <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
@@ -1297,10 +1326,10 @@ function TranscriptToolGroup({
       .find((decision) => decision?.pendingAction || decision?.denialReason)
     ?? block.items.map((item) => findToolDecision(toolDecisionMaps, item)).find(Boolean)
     ?? null;
-  const uniqueNames = [...new Set(block.items.map((item) => item.name))];
+  const uniqueNames = [...new Set(block.items.map((item) => toolBlockLabel(item.name, item.input)))];
   const toolLabel =
     uniqueNames.length === 1
-      ? humanizeLabel(uniqueNames[0])
+      ? uniqueNames[0]
       : `${uniqueNames.length} tools`;
   const title = isRunning
     ? `Using ${toolLabel}`
@@ -1387,7 +1416,7 @@ function TranscriptToolGroup({
                   <ToolFamilyIcon name={item.name} className="h-3 w-3" />
                 </span>
                 <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground")}>
-                  {humanizeLabel(item.name)}
+                  {toolBlockLabel(item.name, item.input)}
                 </span>
                 <span className={cn("text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
                   // Gallery feedback r1: running label uses brand blue, not cyan.
@@ -1402,9 +1431,7 @@ function TranscriptToolGroup({
               <div className={cn("grid gap-2 pl-7", compact ? "grid-cols-1" : "lg:grid-cols-2")}>
                 <div>
                   <div className="mb-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">Input</div>
-                  <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-(length:--text-micro) text-foreground/80">
-                    {formatToolPayload(item.input) || "<empty>"}
-                  </pre>
+                  <ToolInputPayload input={item.input} />
                 </div>
                 {item.result && (
                   <div>

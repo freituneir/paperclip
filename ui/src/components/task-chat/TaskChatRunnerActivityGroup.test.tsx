@@ -248,6 +248,39 @@ describe("TaskChatRunnerActivityGroup", () => {
     expect(container.textContent).not.toContain("command-legacy");
   });
 
+  it("shows a TodoWrite checklist and the subagent label in runner rows", () => {
+    render([
+      {
+        id: "todo",
+        kind: "tool",
+        name: "Todo write",
+        rawName: "TodoWrite",
+        status: "completed",
+        target: "1/2 done · Writing tests",
+        todos: [
+          { content: "Read the plan", status: "completed" },
+          { content: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+        ],
+      },
+      {
+        id: "task",
+        kind: "tool",
+        name: "Subagent · Explore — Map adapter",
+        rawName: "Task",
+        status: "completed",
+        target: "Map the adapter package.",
+        subagent: { type: "Explore", description: "Map adapter" },
+      },
+    ]);
+    act(() => toggle().click());
+    const rows = container.querySelectorAll("li");
+    expect(rows[1]?.textContent).toContain("Subagent · Explore — Map adapter");
+    act(() => rows[0]!.querySelector<HTMLButtonElement>("button")!.click());
+    const checklist = container.querySelector('[data-testid="todo-checklist"]');
+    expect(checklist).not.toBeNull();
+    expect(checklist?.textContent).toContain("Write tests");
+  });
+
   it("does not offer empty disclosures for sparse activities", () => {
     render([
       { id: "thinking-empty", kind: "thinking", lines: [], streaming: true },

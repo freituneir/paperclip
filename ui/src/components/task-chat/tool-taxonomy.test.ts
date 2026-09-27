@@ -33,6 +33,8 @@ describe("tool activity vocabulary", () => {
     expect(toolTaxonomy("NotebookEdit")).toEqual({ family: "edit", icon: FilePenLine, verbLabel: "Editing a notebook" });
     expect(toolTaxonomy("WebFetch")).toEqual({ family: "web", icon: ChevronsLeftRightEllipsis, verbLabel: "Fetching a web page" });
     expect(toolTaxonomy("Agent")).toEqual({ family: "agent", icon: Network, verbLabel: "Starting a subagent" });
+    expect(toolTaxonomy("Update Todos").family).toBe("plan");
+    expect(toolTaxonomy("TodoWrite").family).toBe("plan");
     expect(toolTaxonomy("AskUserQuestion")).toEqual({ family: "question", icon: CircleHelp, verbLabel: "Requesting input" });
   });
 

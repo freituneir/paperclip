@@ -172,6 +172,8 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   web_search: { action: "search", running: "Searching the web", completed: "Searched the web", family: "web" },
   web_fetch: { action: "fetch", running: "Fetching a web page", completed: "Fetched a web page", family: "web" },
   todo_write: { action: "update", running: "Updating the task list", completed: "Updated the task list", family: "plan", group: group("task_operation", "task operation", "task operations") },
+  // ACP titles Claude Code's TodoWrite call "Update Todos".
+  update_todos: { action: "update", running: "Updating the task list", completed: "Updated the task list", family: "plan", group: group("task_operation", "task operation", "task operations") },
   task_create: { action: "create", running: "Creating a task", completed: "Created a task", family: "plan", group: group("task_operation", "task operation", "task operations") },
   task_update: { action: "update", running: "Updating a task", completed: "Updated a task", family: "plan", group: group("task_operation", "task operation", "task operations") },
   task_list: { action: "list", running: "Listing tasks", completed: "Listed tasks", family: "plan", group: group("task_operation", "task operation", "task operations") },

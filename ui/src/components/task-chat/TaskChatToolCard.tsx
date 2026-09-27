@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { TaskChatToolItem } from "./task-chat-model";
 import { toolTaxonomy } from "./tool-taxonomy";
+import { TodoChecklist } from "./TodoChecklist";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -101,7 +102,13 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
           ) : null}
         </span>
       </button>
-      {item.target && showDetail ? (
+      {item.todos?.length ? (
+        <TodoChecklist
+          todos={item.todos}
+          className="ml-1.5 mt-0.5 border-l-2 border-border py-1 pl-2.5"
+        />
+      ) : null}
+      {item.target && showDetail && !item.todos?.length ? (
         <div
           className="task-chat-expanded-line-wrap ml-1.5 mt-0.5 min-w-0 max-w-full overflow-hidden border-l-2 border-border py-1 pl-2.5 font-mono text-(length:--text-micro) leading-relaxed text-muted-foreground"
           data-testid="task-chat-tool-target-detail"

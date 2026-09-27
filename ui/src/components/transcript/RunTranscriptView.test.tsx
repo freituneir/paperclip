@@ -213,6 +213,51 @@ describe("RunTranscriptView", () => {
     expect(html).not.toContain("result");
   });
 
+  it("renders a TodoWrite call as a checklist instead of raw JSON", () => {
+    const input = {
+      todos: [
+        { content: "Read the plan", status: "completed", activeForm: "Reading the plan" },
+        { content: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+        { content: "Ship it", status: "pending", activeForm: "Shipping it" },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          entries={[
+            { kind: "tool_call", ts: "2026-03-12T00:00:00.000Z", name: "TodoWrite", toolUseId: "todo-1", input },
+            { kind: "tool_result", ts: "2026-03-12T00:00:01.000Z", toolUseId: "todo-1", toolName: "TodoWrite", content: "Todos have been modified successfully", isError: false },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+    expect(html).toContain('data-testid="todo-checklist"');
+    expect(html).toContain('data-todo-status="completed"');
+    expect(html).toContain('data-todo-status="in_progress"');
+    expect(html).toContain('data-todo-status="pending"');
+    expect(html).toContain("Write tests");
+    expect(html).not.toContain("&quot;todos&quot;");
+  });
+
+  it("labels Task subagent calls with subagent type and description", () => {
+    const html = renderToStaticMarkup(
+      <ThemeProvider>
+        <RunTranscriptView
+          entries={[
+            {
+              kind: "tool_call",
+              ts: "2026-03-12T00:00:00.000Z",
+              name: "Task",
+              toolUseId: "task-1",
+              input: { subagent_type: "Explore", description: "Map adapter", prompt: "Map the adapter package." },
+            },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+    expect(html).toContain("Subagent · Explore — Map adapter");
+  });
+
   it("links tool rows to pending governed action decisions", () => {
     const invocationId = "11111111-1111-4111-8111-111111111111";
     const actionRequestId = "22222222-2222-4222-8222-222222222222";

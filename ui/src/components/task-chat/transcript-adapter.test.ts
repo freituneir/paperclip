@@ -22,6 +22,7 @@ import {
   prependIssueBrief,
   settledRunChildren,
   splitTranscriptAtAnchors,
+  summarizeToolInput,
   toolDisplayName,
   transcriptToTaskChatItems,
   type SettledTurnMergeMeta,
@@ -360,6 +361,74 @@ describe("toolDisplayName", () => {
     expect(toolDisplayName("tool call")).toBe("Unnamed tool");
     expect(toolDisplayName("tool call (completed)")).toBe("Unnamed tool");
     expect(toolDisplayName("acp_tool")).toBe("Unnamed tool");
+  });
+});
+
+describe("Claude Code TodoWrite and subagent fidelity", () => {
+  const opts = { runId: "run-1", running: false };
+  const todos = {
+    todos: [
+      { content: "Read the plan", status: "completed", activeForm: "Reading the plan" },
+      { content: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+      { content: "Ship it", status: "pending", activeForm: "Shipping it" },
+    ],
+  };
+  const subagent = {
+    subagent_type: "Explore",
+    description: "Map adapter",
+    prompt: "Look through the adapter package and map it.",
+  };
+
+  it("labels Task/Agent calls with subagent type and description", () => {
+    expect(toolDisplayName("Task", subagent)).toBe(
+      "Subagent · Explore — Map adapter",
+    );
+    expect(toolDisplayName("Agent", subagent)).toBe(
+      "Subagent · Explore — Map adapter",
+    );
+    expect(toolDisplayName("Task")).toBe("Task");
+  });
+
+  it("summarizes a todo list as progress instead of dropping it", () => {
+    expect(summarizeToolInput(todos)).toBe("1/3 done · Writing tests");
+  });
+
+  it("carries TodoWrite todos onto the tool item as a checklist", () => {
+    for (const name of ["TodoWrite", "todo_write", "Update Todos"]) {
+      const items = transcriptToTaskChatItems([toolCall(name, todos)], opts);
+      const tool = items[0];
+      expect(tool?.kind).toBe("tool");
+      if (tool?.kind !== "tool") return;
+      expect(tool.todos).toEqual(todos.todos);
+      expect(tool.target).toBe("1/3 done · Writing tests");
+    }
+  });
+
+  it("fills todos and the subagent label from a later ACP update", () => {
+    const items = transcriptToTaskChatItems(
+      [
+        { kind: "tool_call", ts: TS, name: "Update Todos", toolUseId: "t1" } as TranscriptEntry,
+        { kind: "tool_call", ts: TS, name: "tool call", toolUseId: "t1", input: todos } as TranscriptEntry,
+        { kind: "tool_call", ts: TS, name: "Task", toolUseId: "t2" } as TranscriptEntry,
+        { kind: "tool_call", ts: TS, name: "tool call", toolUseId: "t2", input: subagent } as TranscriptEntry,
+      ],
+      opts,
+    );
+    const [todo, task] = items;
+    expect(todo?.kind === "tool" && todo.todos?.length).toBe(3);
+    expect(task?.kind === "tool" && task.name).toBe(
+      "Subagent · Explore — Map adapter",
+    );
+    expect(task?.kind === "tool" && task.subagent).toEqual({
+      type: "Explore",
+      description: "Map adapter",
+    });
+  });
+
+  it("names the subagent in the live status detail", () => {
+    expect(deriveRunStatusLabel([toolCall("Task", subagent)]).detail).toContain(
+      "Subagent · Explore — Map adapter",
+    );
   });
 });
 

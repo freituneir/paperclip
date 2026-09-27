@@ -27,6 +27,12 @@ import {
   toolActivityPresentation,
   toolTaxonomy,
 } from "./tool-taxonomy";
+import {
+  formatSubagentLabel,
+  parseSubagentCall,
+  parseTodoListInput,
+  summarizeTodoProgress,
+} from "./tool-input-shapes";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -165,6 +171,8 @@ export function summarizeToolInput(input: unknown): string | undefined {
   if (typeof input === "string")
     return input.trim() ? clip(input, TARGET_MAX) : undefined;
   if (typeof input !== "object") return clip(String(input), TARGET_MAX);
+  const todos = parseTodoListInput(input);
+  if (todos) return clip(summarizeTodoProgress(todos), TARGET_MAX);
   const record = input as Record<string, unknown>;
   for (const key of TARGET_KEYS) {
     const value = record[key];
@@ -193,9 +201,33 @@ export function summarizeToolInput(input: unknown): string | undefined {
  * ("Read", "Bash", mcp__server__tool); legacy stored logs may not — those fall
  * back to a generic "Tool" row. MCP names collapse to their tool segment.
  */
-export function toolDisplayName(name: string | undefined | null): string {
+export function toolDisplayName(
+  name: string | undefined | null,
+  input?: unknown,
+): string {
+  const subagent = input === undefined ? null : parseSubagentCall(name, input);
+  if (subagent) return formatSubagentLabel(subagent);
   const raw = (name ?? "").trim();
   return isGenericToolName(raw) ? "Unnamed tool" : humanizeToolName(raw);
+}
+
+/**
+ * Fold input-derived presentation (TodoWrite checklist, subagent label) onto a
+ * tool row. ACP often sends the input on a later update than the title.
+ */
+function applyToolInputShape(tool: TaskChatToolItem, input: unknown) {
+  const todos = parseTodoListInput(input);
+  if (todos) {
+    tool.todos = todos;
+    tool.target = clip(summarizeTodoProgress(todos), TARGET_MAX);
+  }
+  if (!tool.subagent) {
+    const subagent = parseSubagentCall(tool.rawName, input);
+    if (subagent) {
+      tool.subagent = subagent;
+      tool.name = formatSubagentLabel(subagent);
+    }
+  }
 }
 
 /** "Thought for Ns" once a coalesced thinking group spans ≥1s. */
@@ -718,22 +750,27 @@ export function transcriptToTaskChatItems(
           // "ls -la"); that is detail for the target slot, not a new identity.
           if (!isGenericToolName(entry.name)) {
             if (isGenericToolName(existing.rawName)) {
-              existing.name = toolDisplayName(entry.name);
+              existing.name = existing.subagent
+                ? existing.name
+                : toolDisplayName(entry.name);
               existing.rawName = entry.name ?? undefined;
             } else if (!existing.target && entry.name !== existing.rawName) {
               existing.target = clip(entry.name!, TARGET_MAX);
             }
           }
+          applyToolInputShape(existing, entry.input);
           lastToolIndex = existingIndex!;
         } else {
-          items.push({
+          const tool: TaskChatToolItem = {
             id: `${runId}:tool:${toolCallId}`,
             kind: "tool",
             name: toolDisplayName(entry.name),
             rawName: entry.name ?? undefined,
             target: summarizeToolInput(entry.input),
             status: "in_progress",
-          });
+          };
+          applyToolInputShape(tool, entry.input);
+          items.push(tool);
           toolIndexById.set(toolCallId, items.length - 1);
           lastToolIndex = items.length - 1;
         }
@@ -755,7 +792,8 @@ export function transcriptToTaskChatItems(
               isGenericToolName(existing.rawName) &&
               !isGenericToolName(entry.toolName)
             ) {
-              existing.name = toolDisplayName(entry.toolName);
+              if (!existing.subagent)
+                existing.name = toolDisplayName(entry.toolName);
               existing.rawName = entry.toolName;
             }
             const detail = formatToolResultDetail(entry.content);
@@ -2073,7 +2111,7 @@ export function deriveRunStatusLabel(entries: readonly TranscriptEntry[]): {
       const target =
         summarizeToolInput(entry.input) ??
         (invocation ? clip(invocation, TARGET_MAX) : undefined);
-      const display = toolDisplayName(name);
+      const display = toolDisplayName(name, entry.input);
       return {
         label: toolTaxonomy(name).verbLabel,
         detail: target ? `${display} · ${target}` : display,

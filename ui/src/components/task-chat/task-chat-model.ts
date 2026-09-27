@@ -12,6 +12,7 @@
  * inventory for the mapping. No timing/motion values live here — those are
  * CSS motion tokens in ui/src/index.css.
  */
+import type { SubagentCall, TodoItem } from "./tool-input-shapes";
 import type {
   IssueAttachment,
   IssueCommentMetadata,
@@ -198,6 +199,10 @@ export interface TaskChatToolItem {
   diff?: TaskChatDiff;
   /** Resolved permission decision badge, when one applied. */
   decision?: "allowed" | "rejected";
+  /** TodoWrite-shaped input, rendered as a status checklist. */
+  todos?: TodoItem[];
+  /** Task/Agent subagent spawn identity (the name already carries its label). */
+  subagent?: SubagentCall;
 }
 
 /**

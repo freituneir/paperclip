@@ -23,6 +23,7 @@ import {
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { toolActivityPresentation } from "./tool-taxonomy";
+import { TodoChecklist } from "./TodoChecklist";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 
@@ -44,8 +45,9 @@ function presentation(item: Activity, active: boolean) {
             : running
               ? tool.runningLabel
               : tool.completedLabel,
-      target: item.target,
-      mono: true,
+      // A subagent spawn reads by who/what it delegated, not its prompt.
+      target: item.subagent ? item.name : item.target,
+      mono: !item.subagent,
       running,
     };
   }
@@ -221,7 +223,8 @@ function ActivityDetails({ item }: { item: Activity }) {
     );
   return (
     <>
-      {item.target ? (
+      {item.todos?.length ? <TodoChecklist todos={item.todos} /> : null}
+      {item.target && !item.todos?.length ? (
         <p className="break-all font-mono">{item.target}</p>
       ) : null}
       {item.detail ? (
@@ -244,7 +247,11 @@ function hasActivityDetails(item: Activity): boolean {
   if (item.kind === "thinking") return item.lines.some((line) => line.trim());
   if (item.kind === "tool")
     return Boolean(
-      item.target?.trim() || item.detail?.trim() || item.diff || item.decision,
+      item.target?.trim() ||
+      item.detail?.trim() ||
+      item.diff ||
+      item.decision ||
+      item.todos?.length,
     );
   if (item.kind === "marker") return Boolean(item.detail?.trim());
   return Boolean(
