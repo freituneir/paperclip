@@ -67,6 +67,7 @@ import { AdvancedToolsRoute } from "./pages/tools/AdvancedToolsRoute";
 import { ProfileWizardRoute } from "./pages/tools/profiles/ProfileWizardRoute";
 import { ProfileDetailRoute } from "./pages/tools/profiles/ProfileDetailRoute";
 import { Browse } from "./pages/apps/Browse";
+import { ClaudeHome } from "./pages/ClaudeHome";
 import { AppsConnect } from "./pages/apps/AppsConnect";
 import { ChatEndpointSetup } from "./pages/apps/chat/ChatEndpointSetup";
 import { ChatEndpointDetail } from "./pages/apps/chat/ChatEndpointDetail";
@@ -192,6 +193,7 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
       <Route path="company/settings/tools/:tab" element={<LegacyToolsSettingsRedirect />} />
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
+      <Route path="claude-home" element={<ClaudeHome />} />
       <Route path="apps" element={<Browse />} />
       <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
       <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
@@ -823,6 +825,7 @@ export function App() {
           <Route path="projects/:projectId/workspaces/:workspaceId" element={<UnprefixedBoardRedirect />} />
           <Route path="projects/:projectId/configuration" element={<UnprefixedBoardRedirect />} />
           <Route path="workspaces" element={<UnprefixedBoardRedirect />} />
+          <Route path="claude-home" element={<UnprefixedBoardRedirect />} />
           <Route path="execution-workspaces/:workspaceId" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/services" element={<UnprefixedExecutionWorkspaceRedirect />} />
           <Route path="execution-workspaces/:workspaceId/configuration" element={<UnprefixedExecutionWorkspaceRedirect />} />

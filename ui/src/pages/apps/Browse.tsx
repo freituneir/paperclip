@@ -57,6 +57,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { buildCompanyUserProfileMap } from "@/lib/company-members";
+import { ClaudeHomeNotice } from "@/components/claude/ClaudeHomeNotice";
 import { AppLogo } from "./AppLogo";
 import {
   appApplicationSourceSlug,
@@ -636,6 +637,8 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           />
         </div>
       </header>
+
+      <ClaudeHomeNotice companyId={selectedCompanyId} />
 
       {loadFailed ? (
         <div

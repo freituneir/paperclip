@@ -18,6 +18,8 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
 const chatListMock = vi.hoisted(() => vi.fn());
+const getClaudeHomeMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/claudeHome", () => ({ claudeHomeApi: { get: getClaudeHomeMock } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: experimentalMock } }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: chatListMock } }));
 
@@ -134,6 +136,7 @@ describe("Connectors landing page", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    getClaudeHomeMock.mockResolvedValue({ mcpServers: [] });
     experimentalMock.mockResolvedValue({ enableChatConnectors: true });
     chatListMock.mockResolvedValue([]);
     listGalleryMock.mockResolvedValue({
@@ -189,6 +192,40 @@ describe("Connectors landing page", () => {
     await flushReact();
     return client;
   }
+
+  describe("Claude Home notice", () => {
+    const nativeServer = (name: string) => ({
+      name,
+      origin: "claude_home",
+      transport: "http",
+      target: `https://${name}.example.com/mcp`,
+      governed: false,
+    });
+
+    it("is hidden when Claude Home has no native MCP servers", async () => {
+      await renderBrowse();
+      expect(getClaudeHomeMock).toHaveBeenCalledWith("company-1");
+      expect(container.querySelector('[data-testid="claude-home-notice"]')).toBeNull();
+    });
+
+    it("counts native MCP servers and links to Claude Home", async () => {
+      getClaudeHomeMock.mockResolvedValue({ mcpServers: [nativeServer("github"), nativeServer("linear")] });
+      await renderBrowse();
+      const notice = container.querySelector('[data-testid="claude-home-notice"]');
+      expect(notice?.textContent).toContain(
+        "2 MCP servers are also configured natively in Claude Code. They run outside Paperclip approvals.",
+      );
+      expect(notice?.querySelector('a[href="/claude-home"]')).not.toBeNull();
+    });
+
+    it("stays hidden without failing the page when the inventory can't be read", async () => {
+      getClaudeHomeMock.mockRejectedValue(new Error("Board access required"));
+      await renderBrowse();
+      expect(container.querySelector('[data-testid="claude-home-notice"]')).toBeNull();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.querySelector('[aria-label="Connector list"]')).not.toBeNull();
+    });
+  });
 
   it("defaults to tools-only GitHub and hides chat-only catalog and existing chat accounts", async () => {
     experimentalMock.mockResolvedValue({});

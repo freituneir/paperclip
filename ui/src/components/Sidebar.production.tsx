@@ -16,6 +16,7 @@ import {
   Package,
   Settings,
   FolderOpen,
+  SquareTerminal,
   Unplug,
   MessagesSquare,
   GanttChartSquare,
@@ -231,6 +232,7 @@ export function Sidebar() {
         <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
           <SidebarNavItem to="/org" label="Org" icon={Network} />
           {showApps ? <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} /> : null}
+          <SidebarNavItem to="/claude-home" label="Claude Home" icon={SquareTerminal} />
           <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}

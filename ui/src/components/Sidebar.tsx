@@ -16,6 +16,7 @@ import {
   Package,
   Settings,
   FolderOpen,
+  SquareTerminal,
   Unplug,
   MessagesSquare,
   GanttChartSquare,
@@ -243,6 +244,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             <SidebarNavItem to="/agents" label="Agents" icon={Users} />
             <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
             <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
+            <SidebarNavItem to="/claude-home" label="Claude Home" icon={SquareTerminal} />
             <SidebarNavItem to="/activity" label="Audit" icon={History} />
           </SidebarSection>
         ) : null}
@@ -262,6 +264,7 @@ export function Sidebar({ children }: { children?: ReactNode }) {
             >
               <SidebarNavItem to="/org" label="Org" icon={Network} />
               <SidebarNavItem to="/apps" label="Connectors" icon={Unplug} />
+              <SidebarNavItem to="/claude-home" label="Claude Home" icon={SquareTerminal} />
               <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
               <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
               <SidebarNavItem to="/activity" label="Activity" icon={History} />
