@@ -4,7 +4,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ActiveAgentsPanel, AgentRunCard } from "./ActiveAgentsPanel";
+import { ActiveAgentsPanel, AgentRunCard, latestRunPerAgent } from "./ActiveAgentsPanel";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
@@ -126,6 +126,43 @@ describe("ActiveAgentsPanel", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it("shows one card per agent when grouped, preferring the live run", async () => {
+    const liveRun = { ...createRun(1), agentId: "agent-a", agentName: "Chief of Staff" };
+    const olderRun = { ...createRun(2), id: "run-older", agentId: "agent-a", agentName: "Chief of Staff", status: "succeeded" };
+    const otherAgentRun = { ...createRun(3), agentId: "agent-b", agentName: "Researcher", status: "succeeded" };
+    mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([liveRun, olderRun, otherAgentRun]);
+
+    expect(latestRunPerAgent([liveRun, olderRun, otherAgentRun] as never).map((run) => run.id)).toEqual([
+      liveRun.id,
+      otherAgentRun.id,
+    ]);
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ActiveAgentsPanel companyId="company-1" groupByAgent />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(mockHeartbeatsApi.liveRunsForCompany).toHaveBeenCalledWith("company-1", {
+      minCount: 50,
+      limit: undefined,
+    });
+    expect(container.querySelectorAll("[data-run-status]")).toHaveLength(2);
+    expect(container.querySelector('[data-run-status="running"]')?.textContent).toContain("Chief of Staff");
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   it("links hidden active/recent runs to the full live dashboard", async () => {
