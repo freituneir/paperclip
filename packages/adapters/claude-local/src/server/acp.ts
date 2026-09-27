@@ -66,7 +66,12 @@ import {
   resolveClaudeHomeActivation,
   type ClaudeHomeRunPreparation,
 } from "./claude-home-run.js";
-import { buildClaudeSdkOptions, parseClaudeNativeOptions, type ClaudeNativeOptions } from "./native-options.js";
+import {
+  buildClaudeSdkOptions,
+  parseClaudeNativeOptions,
+  parseExtraArgsForSdk,
+  type ClaudeNativeOptions,
+} from "./native-options.js";
 import { buildClaudeLaunchManifest } from "./launch-manifest.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
@@ -134,7 +139,14 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-export const PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV = "PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON";
+/**
+ * Env var carrying the Claude Agent SDK options JSON to the patched
+ * `claude-agent-acp`. It holds the settings overlay (including its `env`
+ * values), so its name must match the acpx engine's log redaction pattern
+ * (`SENSITIVE_ENV_KEY` in adapter-utils: key|token|secret|...) to be masked in
+ * the logged invocation env.
+ */
+export const PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV = "PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON";
 /** What `claude-agent-acp` passes as settingSources when nothing overrides it (acpx `_meta`). */
 const ACP_DEFAULT_SETTING_SOURCES = ["project", "local"];
 
@@ -155,11 +167,11 @@ function claudeAcpExtraArgs(config: Record<string, unknown>): string[] {
 /**
  * The env the patched `claude-agent-acp` reads to mirror the CLI lane's native
  * options: `CLAUDE_CONFIG_DIR` (company Claude Home) and
- * `PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON` (Claude Agent SDK options). Local targets
- * only. Without an active Claude Home (isolated agents, or an operator-set
- * CLAUDE_CONFIG_DIR) only the non-home options (fallback model, permission
- * mode, settings overlay, tool lists, extra args) are forwarded, and MCP stays
- * non-strict as it always was on ACP. The JSON is omitted when empty, so an
+ * `PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON` (Claude Agent SDK options). Local
+ * targets only. Without an active Claude Home (isolated agents, or an
+ * operator-set CLAUDE_CONFIG_DIR) only the non-home options (fallback model,
+ * permission mode, settings overlay, tool lists) are forwarded, MCP stays
+ * non-strict, and extraArgs stay ignored, as they always were on ACP. The JSON is omitted when empty, so an
  * unconfigured isolated agent keeps its legacy env byte-for-byte.
  */
 function buildClaudeAcpNativeEnv(
@@ -175,7 +187,6 @@ function buildClaudeAcpNativeEnv(
     configEnv: env,
     managedAiConnection: Boolean(config.managedAiConnection),
   });
-  const extraArgs = claudeAcpExtraArgs(config);
   const nativeEnv: Record<string, string> = {};
   let sdkOptions: Record<string, unknown>;
   if (activation.active) {
@@ -183,12 +194,12 @@ function buildClaudeAcpNativeEnv(
     sdkOptions = buildClaudeSdkOptions(native, {
       homeActive: true,
       hasPaperclipMcp: Boolean(options.hasPaperclipMcp),
-      extraArgs,
+      extraArgs: claudeAcpExtraArgs(config),
     });
   } else {
     sdkOptions = buildClaudeSdkOptions(
       { ...native, nativeMcp: "enabled" },
-      { homeActive: false, hasPaperclipMcp: false, extraArgs },
+      { homeActive: false, hasPaperclipMcp: false, extraArgs: [] },
     );
   }
   if (Object.keys(sdkOptions).length > 0) {
@@ -473,7 +484,13 @@ async function buildClaudeAcpLaunchManifest(input: {
   const native = parseClaudeNativeOptions(config);
   const sdkOptions = readSdkOptionsFromAcpConfig(acpConfig);
   const warnings = [...homeRun.warnings];
-  const extraArgs = targetIsRemote ? [] : claudeAcpExtraArgs(config);
+  const configuredExtraArgs = claudeAcpExtraArgs(config);
+  // extraArgs reach the SDK only with an active Claude Home (see buildClaudeAcpNativeEnv).
+  const extraArgs = !targetIsRemote && homeRun.active ? configuredExtraArgs : [];
+  if (!targetIsRemote && !homeRun.active && configuredExtraArgs.length > 0) {
+    warnings.push("extraArgs are applied on the ACP engine only with the company Claude Home; they were ignored for this isolated run.");
+  }
+  if (extraArgs.length > 0) warnings.push(...parseExtraArgsForSdk(extraArgs).warnings);
   let options: ClaudeNativeOptions = native;
   if (targetIsRemote) {
     const ignored = [
@@ -526,6 +543,15 @@ async function buildClaudeAcpLaunchManifest(input: {
   });
 }
 
+/** The host cwd the acpx engine runs in (same precedence as its prepare step). */
+function resolveClaudeAcpLocalCwd(ctx: AdapterExecutionContext): string {
+  const workspace = parseObject(ctx.context.paperclipWorkspace);
+  const workspaceCwd = asString(workspace.cwd, "");
+  const configuredCwd = asString(ctx.config.cwd, "");
+  const useConfigured = asString(workspace.source, "") === "agent_home" && configuredCwd.length > 0;
+  return (useConfigured ? "" : workspaceCwd) || configuredCwd || process.cwd();
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -540,14 +566,17 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
     const targetIsRemote = target?.kind === "remote";
-    // Claude Home: same activation, login carry-over, and managed-connection
-    // auth-conflict rules as the CLI lane (claude-home-run.ts).
+    // Claude Home: same activation, missing-login warning, and
+    // managed-connection auth-conflict rules as the CLI lane (claude-home-run.ts).
+    const configEnv = parseObject(ctx.config.env);
     const homeRun = await prepareClaudeHomeRun({
       native: parseClaudeNativeOptions(ctx.config),
       targetIsRemote,
-      configEnv: parseObject(ctx.config.env),
+      configEnv,
       managedAiConnection: Boolean(ctx.config.managedAiConnection),
       companyId: ctx.agent.companyId,
+      cwd: targetIsRemote ? null : resolveClaudeAcpLocalCwd(ctx),
+      runEnv: { ...process.env, ...configEnv },
       onLog: ctx.onLog,
     });
     if (homeRun.failure) return claudeHomeFailureResult(homeRun.failure);

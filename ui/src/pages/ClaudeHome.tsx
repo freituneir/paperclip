@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Pencil, Plus, ShieldCheck, SquareTerminal, Trash2 } from "lucide-react";
 import type { ClaudeHomeInventory, ClaudeMcpServerSummary, ClaudeNamedItem } from "@paperclipai/shared";
 import { claudeHomeApi } from "@/api/claudeHome";
+import { ApiError } from "@/api/client";
 import { OriginBadge } from "@/components/claude/OriginBadge";
 import { CopyText } from "@/components/CopyText";
 import { PageSkeleton } from "@/components/PageSkeleton";
@@ -26,6 +27,10 @@ import { AdoptMcpServerDialog, type AdoptTarget } from "./claude-home/AdoptMcpSe
 import { McpServerDialog, type McpServerDialogTarget } from "./claude-home/McpServerDialog";
 import { isAdoptableMcpServer } from "./claude-home/mcp-server-form";
 
+function isForbidden(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 403;
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
 }
@@ -33,6 +38,7 @@ function errorMessage(error: unknown): string {
 export function ClaudeHome() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const defaultRetry = useQueryClient().getDefaultOptions().queries?.retry;
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Claude Home" }]);
@@ -43,12 +49,36 @@ export function ClaudeHome() {
     queryKey: queryKeys.claudeHome(selectedCompanyId ?? "__none__"),
     queryFn: () => claudeHomeApi.get(selectedCompanyId!),
     enabled: Boolean(selectedCompanyId),
+    // A 403 (no agents:create permission) will not change on retry.
+    retry: (failureCount, error) => {
+      if (isForbidden(error)) return false;
+      if (typeof defaultRetry === "function") return defaultRetry(failureCount, error);
+      if (typeof defaultRetry === "boolean") return defaultRetry;
+      return failureCount < (defaultRetry ?? 3);
+    },
   });
 
   if (!selectedCompanyId) {
     return <div className="p-6 text-sm text-muted-foreground">Select an organization to open Claude Home.</div>;
   }
   if (inventoryQuery.isLoading) return <PageSkeleton variant="detail" />;
+  if (inventoryQuery.isError && isForbidden(inventoryQuery.error)) {
+    return (
+      <div className="max-w-4xl space-y-3">
+        <h2 className="text-xl font-bold">Claude Home</h2>
+        <div
+          className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
+          data-testid="claude-home-forbidden"
+        >
+          <ShieldCheck className="h-4 w-4 shrink-0" aria-hidden />
+          <p className="min-w-0 flex-1">
+            You need permission to manage agents to view Claude Home. Its settings, hooks and MCP commands run on the
+            host for every agent in this organization.
+          </p>
+        </div>
+      </div>
+    );
+  }
   if (inventoryQuery.isError || !inventoryQuery.data) {
     return (
       <div className="max-w-4xl space-y-3">

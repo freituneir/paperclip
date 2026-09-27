@@ -267,6 +267,7 @@ async function renderForm(
     onDirtyChange?: (dirty: boolean) => void;
     onSaveActionChange?: (save: (() => void) | null) => void;
     onCancelActionChange?: (cancel: (() => void) | null) => void;
+    onSaveBlockedChange?: (blocked: boolean) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -298,6 +299,7 @@ async function renderForm(
               onDirtyChange={options.onDirtyChange}
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
+              onSaveBlockedChange={options.onSaveBlockedChange}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -765,6 +767,71 @@ describe("AgentConfigForm environment selector", () => {
     await flushReact();
     expect(dirty).toHaveBeenLastCalledWith(false);
     expect(result.container.querySelector('input[aria-label="Variable name"]')).toBeNull();
+  });
+
+  it("refuses to save while a JSON object field draft is invalid", async () => {
+    let save: (() => void) | null = null;
+    const result = await renderForm(
+      [],
+      { adapterType: "claude_local", adapterConfig: { settingsOverlay: { model: "a" } } },
+      { onSaveActionChange: action => { save = action; } },
+    );
+    roots.push(result.root);
+    const labelEl = [...result.container.querySelectorAll("label")].find(
+      (el) => el.textContent?.trim() === "Settings overlay JSON",
+    )!;
+    expect(labelEl).toBeTruthy();
+    const textarea = labelEl.parentElement!.parentElement!.querySelector("textarea")!;
+    const type = async (value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+    };
+    const saveButton = () =>
+      [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save");
+
+    await type('{"model":"b"}');
+    expect(saveButton()?.disabled).toBe(false);
+    await type('{"model":"b"');
+    expect(saveButton()?.disabled).toBe(true);
+    expect(result.container.textContent).toContain("Fix invalid JSON before saving");
+    await act(async () => { saveButton()?.click(); await save?.(); });
+    expect(result.onSave).not.toHaveBeenCalled();
+
+    await type('{"model":"c"}');
+    expect(saveButton()?.disabled).toBe(false);
+    await act(async () => { await save?.(); });
+    expect(result.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ adapterConfig: expect.objectContaining({ settingsOverlay: { model: "c" } }) }),
+    );
+  });
+
+  it("reports a blocked save to the page when the inline Save is hidden", async () => {
+    const blocked = vi.fn();
+    const result = await renderForm(
+      [],
+      { adapterType: "claude_local", adapterConfig: { settingsOverlay: { model: "a" } } },
+      { hideInlineSave: true, onSaveBlockedChange: blocked },
+    );
+    roots.push(result.root);
+    const labelEl = [...result.container.querySelectorAll("label")].find(
+      (el) => el.textContent?.trim() === "Settings overlay JSON",
+    )!;
+    const textarea = labelEl.parentElement!.parentElement!.querySelector("textarea")!;
+    const type = async (value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, value);
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await flushReact();
+    };
+
+    await type('{"model":"b"');
+    expect(blocked).toHaveBeenLastCalledWith(true);
+    await type('{"model":"b"}');
+    expect(blocked).toHaveBeenLastCalledWith(false);
   });
 
   it("reads and saves Pi thinking effort using the Pi runtime key", async () => {

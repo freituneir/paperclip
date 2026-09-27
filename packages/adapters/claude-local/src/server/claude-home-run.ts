@@ -1,13 +1,13 @@
 import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { ClaudeHomeInventory } from "@paperclipai/shared";
 import {
+  claudeConfigDirHasCredentialsFile,
   ensureClaudeHomeDir,
   findHomeAuthConflicts,
+  findProjectSettingsAuthConflicts,
   readClaudeHomeInventory,
   resolveClaudeHomeDir,
-  seedClaudeHomeCredentials,
 } from "./claude-home.js";
-import { resolveSharedClaudeConfigDir } from "./claude-config.js";
 import type { ClaudeNativeOptions } from "./native-options.js";
 
 /**
@@ -55,46 +55,78 @@ export interface ClaudeHomeRunPreparation {
   failure: { errorCode: "ai_connection_incompatible"; errorMessage: string } | null;
 }
 
+/** Env keys that authenticate Claude without a file-based login. */
+const CLAUDE_AUTH_ENV_KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] as const;
+
+function hasAuthEnv(env: Record<string, unknown>): boolean {
+  return CLAUDE_AUTH_ENV_KEYS.some((key) => {
+    const value = env[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+export function claudeHomeNoLoginWarning(homeDir: string): string {
+  return `Claude Home has no login. Run \`CLAUDE_CONFIG_DIR='${homeDir}' claude\` and /login once, use a managed AI connection, or set claudeHome to isolated.`;
+}
+
 /**
- * Activate the Claude Home for a run: create it, carry the host login over
- * (only without a managed AI connection), read its inventory, and refuse a
- * managed-connection run whose home settings or settings overlay would
- * override the selected connection's auth. The caller points
- * CLAUDE_CONFIG_DIR at `homeDir`.
+ * Activate the Claude Home for a run: create it, read its inventory, warn when
+ * it has no login (host credentials are never copied in: forking OAuth refresh
+ * tokens can log the host out when they rotate), and refuse a managed-connection
+ * run whose home settings, project settings (`<cwd>/.claude/settings*.json`,
+ * loaded with the home), or settings overlay would override the selected
+ * connection's auth. The caller points CLAUDE_CONFIG_DIR at `homeDir`.
  */
 export async function prepareClaudeHomeRun(
   input: ClaudeHomeActivationInput & {
     companyId: string;
+    /** The run's local cwd; its project settings are checked for auth conflicts. */
+    cwd?: string | null;
+    /** The env the Claude process will see (host env + agent env). */
+    runEnv?: Record<string, unknown>;
     onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   },
 ): Promise<ClaudeHomeRunPreparation> {
   const activation = resolveClaudeHomeActivation(input);
+  const warnings = [...activation.warnings];
   let homeDir: string | null = null;
   let inventory: ClaudeHomeInventory | null = null;
   if (activation.active) {
     homeDir = resolveClaudeHomeDir(process.env, input.companyId);
     await ensureClaudeHomeDir(homeDir);
-    if (!input.managedAiConnection) {
-      const sourceConfigDir = resolveSharedClaudeConfigDir(process.env);
-      if (await seedClaudeHomeCredentials(homeDir, sourceConfigDir)) {
-        await input.onLog("stdout", `[paperclip] Copied Claude login from ${sourceConfigDir} into Claude Home ${homeDir}.\n`);
-      }
-    }
     inventory = await readClaudeHomeInventory(homeDir);
+    if (
+      !input.managedAiConnection
+      && !hasAuthEnv(input.runEnv ?? {})
+      && !(await claudeConfigDirHasCredentialsFile(homeDir))
+    ) {
+      const warning = claudeHomeNoLoginWarning(homeDir);
+      await input.onLog("stderr", `[paperclip] ${warning}\n`);
+      warnings.push(warning);
+    }
   }
   let failure: ClaudeHomeRunPreparation["failure"] = null;
   if (input.managedAiConnection) {
     const homeConflicts = findHomeAuthConflicts(inventory?.settings ?? null);
+    const projectConflicts = activation.active && input.cwd
+      ? await findProjectSettingsAuthConflicts(input.cwd)
+      : [];
     const overlayConflicts = findHomeAuthConflicts(input.native.settingsOverlay);
-    if (homeConflicts.length > 0 || overlayConflicts.length > 0) {
-      const errorMessage = homeConflicts.length > 0
-        ? `Claude Home settings.json defines ${homeConflicts.join(", ")}, which would override the selected AI connection. Remove them in Claude Home.`
-        : `The agent settings overlay defines ${overlayConflicts.join(", ")}, which would override the selected AI connection. Remove them from the agent configuration.`;
+    let errorMessage: string | null = null;
+    if (homeConflicts.length > 0) {
+      errorMessage = `Claude Home settings.json defines ${homeConflicts.join(", ")}, which would override the selected AI connection. Remove them in Claude Home.`;
+    } else if (projectConflicts.length > 0) {
+      const { file, conflicts } = projectConflicts[0]!;
+      errorMessage = `Project settings ${file} defines ${conflicts.join(", ")}, which would override the selected AI connection. Remove them from the project settings or set claudeHome to isolated.`;
+    } else if (overlayConflicts.length > 0) {
+      errorMessage = `The agent settings overlay defines ${overlayConflicts.join(", ")}, which would override the selected AI connection. Remove them from the agent configuration.`;
+    }
+    if (errorMessage) {
       await input.onLog("stderr", `[paperclip] ${errorMessage}\n`);
       failure = { errorCode: "ai_connection_incompatible", errorMessage };
     }
   }
-  return { active: activation.active, homeDir, inventory, warnings: activation.warnings, failure };
+  return { active: activation.active, homeDir, inventory, warnings, failure };
 }
 
 /** The pre-spawn execution result for a `prepareClaudeHomeRun` failure. */

@@ -70,7 +70,7 @@ execution targets. Remote/sandbox targets keep their seed path, which is out of
 scope.
 
 **ACP plumbing.** The Claude adapter serializes the SDK options above into the
-env var `PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON` on the ACP agent process. The
+env var `PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON` on the ACP agent process. The
 existing `claude-agent-acp` patch is extended to merge those options after
 `acpx`'s `_meta` options, so they win over acpx's `settingSources`. The
 ACP-controlled fields (`cwd`, `mcpServers`, `canUseTool`, hooks) stay controlled

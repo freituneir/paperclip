@@ -4,7 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import type { ClaudeLaunchManifest } from "@paperclipai/shared";
-import { buildClaudeAcpConfig, createClaudeAcpExecutor } from "./acp.js";
+import { buildInvocationEnvForLogs, redactEnvForLogs } from "@paperclipai/adapter-utils/server-utils";
+import { buildClaudeAcpConfig, createClaudeAcpExecutor, PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV } from "./acp.js";
 
 const ENV_KEYS = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_CLAUDE_HOME_ROOT", "CLAUDE_CONFIG_DIR"] as const;
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -23,7 +24,7 @@ beforeEach(async () => {
   delete process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
   delete process.env.PAPERCLIP_INSTANCE_ID;
   process.env.PAPERCLIP_HOME = paperclipHome;
-  // Keep credential seeding away from the developer's real ~/.claude.
+  // Keep the host login lookup away from the developer's real ~/.claude.
   process.env.CLAUDE_CONFIG_DIR = path.join(paperclipHome, "host-claude");
 });
 
@@ -55,7 +56,7 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
     const env = envOf(built);
     expect(String(env.CLAUDE_CONFIG_DIR)).toMatch(/[\\/]c1[\\/]claude-home$/);
     expect(String(env.CLAUDE_CONFIG_DIR).startsWith(paperclipHome)).toBe(true);
-    const sdk = JSON.parse(String(env.PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON));
+    const sdk = JSON.parse(String(env[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV]));
     expect(sdk).toMatchObject({
       strictMcpConfig: true,
       fallbackModel: "claude-sonnet-5",
@@ -70,16 +71,49 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
       {},
       { companyId: "c1" },
     );
-    const sdk = JSON.parse(String(envOf(built).PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON));
+    const sdk = JSON.parse(String(envOf(built)[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV]));
     expect(sdk.settings).toEqual({ permissions: { allow: ["Bash(ls)"], defaultMode: "acceptEdits" } });
     expect(sdk.strictMcpConfig).toBeUndefined();
+  });
+
+  it("names the SDK options env var so the log redactor masks it", () => {
+    expect(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV).toBe("PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON");
+    const built = buildClaudeAcpConfig(
+      { settingsOverlay: { env: { MY_SERVICE_PASSWORD_VALUE: "hunter2-overlay" } } },
+      {},
+      { companyId: "c1" },
+    );
+    const env = Object.fromEntries(
+      Object.entries(envOf(built)).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    );
+    expect(env[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV]).toContain("hunter2-overlay");
+    const logged = redactEnvForLogs(env);
+    expect(logged[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV]).not.toContain("hunter2-overlay");
+    expect(JSON.stringify(buildInvocationEnvForLogs(env))).not.toContain("hunter2-overlay");
+  });
+
+  it("does not forward extraArgs for isolated agents (ACP ignored them before Claude Home)", () => {
+    const built = buildClaudeAcpConfig(
+      { claudeHome: "isolated", extraArgs: ["--foo", "1"] },
+      {},
+      { companyId: "c1" },
+    );
+    expect(envOf(built)).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
+    const withOther = buildClaudeAcpConfig(
+      { claudeHome: "isolated", fallbackModel: "claude-sonnet-5", args: ["--foo", "1"] },
+      {},
+      { companyId: "c1" },
+    );
+    const sdk = JSON.parse(String(envOf(withOther)[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV]));
+    expect(sdk.fallbackModel).toBe("claude-sonnet-5");
+    expect(sdk).not.toHaveProperty("extraArgs");
   });
 
   it("leaves isolated agents untouched", () => {
     const built = buildClaudeAcpConfig({ claudeHome: "isolated" }, {}, { companyId: "c1", hasPaperclipMcp: true });
     const env = envOf(built);
     expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    expect(env).not.toHaveProperty("PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON");
+    expect(env).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
   });
 
   it("leaves remote targets untouched", () => {
@@ -90,13 +124,13 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
     );
     const env = envOf(built);
     expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    expect(env).not.toHaveProperty("PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON");
+    expect(env).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
   });
 
   it("does nothing without a company id (legacy callers)", () => {
     const env = envOf(buildClaudeAcpConfig({ claudeHome: "company" }, {}));
     expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
-    expect(env).not.toHaveProperty("PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON");
+    expect(env).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
   });
 
   it("respects an operator CLAUDE_CONFIG_DIR unless the agent uses a managed AI connection", () => {
@@ -106,7 +140,7 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
       { companyId: "c1" },
     );
     expect(envOf(operator).CLAUDE_CONFIG_DIR).toBe("/operator/claude");
-    expect(envOf(operator)).not.toHaveProperty("PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON");
+    expect(envOf(operator)).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
 
     const managed = buildClaudeAcpConfig(
       { managedAiConnection: true, env: { CLAUDE_CONFIG_DIR: "/tmp/managed-run" } },
@@ -294,11 +328,77 @@ describe("createClaudeAcpExecutor Claude Home parity", () => {
       onMeta: async (payload) => { meta.push(payload); },
     }));
     await expect(fs.stat(homeDirFor("company-1"))).rejects.toThrow();
-    expect(meta[0]?.env ?? {}).not.toHaveProperty("PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON");
+    expect(meta[0]?.env ?? {}).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
     expect(meta[0]?.launchManifest).toMatchObject({
       engine: "acp",
       claudeHome: { mode: "isolated", dir: null },
       settingSources: ["project", "local"],
     });
+  });
+  it("masks the SDK options (settings overlay secrets) in the logged invocation env", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-native-redact-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+    await execute(buildContext(root, { settingsOverlay: { env: { SOME_UPSTREAM_CREDENTIAL: "overlay-s3cr3t" } } }, {
+      onMeta: async (payload) => { meta.push(payload); },
+    }));
+    const loggedEnv = (meta[0]?.env ?? {}) as Record<string, string>;
+    expect(loggedEnv).toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
+    expect(JSON.stringify(meta[0])).not.toContain("overlay-s3cr3t");
+  });
+
+  it("fails a managed-connection run when the project settings.local.json overrides auth", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-native-project-");
+    await fs.mkdir(path.join(root, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, ".claude", "settings.local.json"),
+      JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: "t" } }),
+    );
+    let runtimes = 0;
+    const execute = createClaudeAcpExecutor({
+      createRuntime: () => {
+        runtimes += 1;
+        return new FakeRuntime() as never;
+      },
+    });
+    const result = await execute(buildContext(root, { managedAiConnection: true }));
+    expect(runtimes).toBe(0);
+    expect(result.errorCode).toBe("ai_connection_incompatible");
+    expect(result.errorMessage).toContain(path.join(root, ".claude", "settings.local.json"));
+    expect(result.errorMessage).toContain("env.CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  it("warns in the manifest when the Claude Home has no login", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-native-nologin-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+    const noAuthEnv = { ANTHROPIC_API_KEY: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_OAUTH_TOKEN: "" };
+    await execute(buildContext(root, { env: noAuthEnv }, { onMeta: async (payload) => { meta.push(payload); } }));
+    const manifest = meta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+    expect(manifest.warnings).toContain(
+      `Claude Home has no login. Run \`CLAUDE_CONFIG_DIR='${homeDirFor("company-1")}' claude\` and /login once, use a managed AI connection, or set claudeHome to isolated.`,
+    );
+  });
+
+  it("reports ignored extraArgs for isolated agents and unparseable extraArgs with an active home", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-native-extra-");
+    const isolatedMeta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+    await execute(buildContext(root, { claudeHome: "isolated", extraArgs: ["--foo", "1"] }, {
+      onMeta: async (payload) => { isolatedMeta.push(payload); },
+    }));
+    const isolated = isolatedMeta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+    expect(isolated.extraArgs).toEqual([]);
+    expect(isolated.warnings).toContain(
+      "extraArgs are applied on the ACP engine only with the company Claude Home; they were ignored for this isolated run.",
+    );
+
+    const homeMeta: AdapterInvocationMeta[] = [];
+    await execute(buildContext(root, { extraArgs: ["--add-dir", "/a", "/b"] }, {
+      onMeta: async (payload) => { homeMeta.push(payload); },
+    }));
+    const home = homeMeta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+    expect(home.extraArgs).toEqual(["--add-dir", "/a", "/b"]);
+    expect(home.warnings.some((warning) => warning.includes('"/b" was ignored'))).toBe(true);
   });
 });

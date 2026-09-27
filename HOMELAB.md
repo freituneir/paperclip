@@ -127,6 +127,9 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
   ```
   An interactive session there needs its own login (`/login` once; it is stored
   in the home). Agent runs keep using the managed connection.
+  Agents without a managed connection need that login too: the run logs
+  "Claude Home has no login" until you do it. Paperclip never copies OAuth
+  credentials, because copied refresh tokens break when one copy rotates.
 - **Take over a run:** the run page shows
   `cd '<cwd>' && CLAUDE_CONFIG_DIR='<home>' claude --resume <session>`. Run it
   inside the container (prefix as above) to continue the agent's session in real

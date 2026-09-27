@@ -18,7 +18,7 @@
 - `claudeHome` default = `"company"`; `nativeMcp` default = `"enabled"`; `claudePermissionMode` default = `""` (legacy behavior). `"isolated"` must reproduce today's behavior byte-for-byte in args/env.
 - The Claude Home feature applies only to **local** execution targets. Remote/sandbox paths are untouched.
 - UI: tokens only (`pnpm check:token-gates`), shadcn components, lucide icons, copy says "task" not "issue".
-- Env var names are exact: `PAPERCLIP_CLAUDE_HOME_ROOT` (operator override) and `PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON` (adapter → patched ACP agent).
+- Env var names are exact: `PAPERCLIP_CLAUDE_HOME_ROOT` (operator override) and `PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON` (adapter → patched ACP agent).
 - Run pnpm as `corepack pnpm`.
 
 ## Review Focus
@@ -206,15 +206,15 @@ export function buildClaudeLaunchManifest(input: {
 - Modify: `patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch` (via `corepack pnpm patch @agentclientprotocol/claude-agent-acp@0.73.0`, edit `dist/acp-agent.js`, then `corepack pnpm patch-commit <dir>`)
 - Test: `packages/adapters/claude-local/src/server/acp.native.test.ts`
 
-**Interfaces:** Consumes the Task 1 functions. Produces the env keys `CLAUDE_CONFIG_DIR` and `PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON` on the ACP config env.
+**Interfaces:** Consumes the Task 1 functions. Produces the env keys `CLAUDE_CONFIG_DIR` and `PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON` on the ACP config env.
 
-- `buildClaudeAcpConfig(config, inheritedEnv, opts?: { companyId?: string; remote?: boolean; hasPaperclipMcp?: boolean })`. When local and `claudeHome==="company"`, set `env.CLAUDE_CONFIG_DIR = resolveClaudeHomeDir(process.env, companyId)` and `env.PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON = JSON.stringify(buildClaudeSdkOptions(...))`. Omit the SDK options JSON when it is `{}`. `extraArgs` from config go into the SDK `extraArgs`.
+- `buildClaudeAcpConfig(config, inheritedEnv, opts?: { companyId?: string; remote?: boolean; hasPaperclipMcp?: boolean })`. When local and `claudeHome==="company"`, set `env.CLAUDE_CONFIG_DIR = resolveClaudeHomeDir(process.env, companyId)` and `env.PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON = JSON.stringify(buildClaudeSdkOptions(...))`. Omit the SDK options JSON when it is `{}`. `extraArgs` from config go into the SDK `extraArgs`.
 - `createClaudeAcpExecutor`:
   - ensure the home dir exists;
   - run the managed-connection auth-conflict check (the same message as the CLI lane);
   - wrap `ctx.onMeta` so the meta gets `launchManifest` (engine `"acp"`, `instructions.delivery: "user_prompt_prefix"`, `permission` source `acp_default` unless `claudePermissionMode` is set);
   - take `paperclipMcp` from `ctx.runtimeMcp?.getServers()`.
-- Patch `acp-agent.js`: right after `...userProvidedOptions,` inside `const options = {`, insert `...readPaperclipClaudeSdkOptions(),`. Define that function near the top of the file: parse `process.env.PAPERCLIP_CLAUDE_SDK_OPTIONS_JSON`, return `{}` on absence or error, and pick only the keys `settingSources, settings, strictMcpConfig, fallbackModel, allowedTools, disallowedTools, extraArgs`. For `extraArgs` and `disallowedTools`, merge into the later ACP-controlled spreads instead: change `extraArgs: {...userProvidedOptions?.extraArgs, ...` to also spread `readPaperclipClaudeSdkOptions().extraArgs`, and `disallowedTools: [...(userProvidedOptions?.disallowedTools||[]), ...(paperclipSdk.disallowedTools||[]), ...disallowedTools]`. The `settings` merge must be a deep-merge of `settings` with `configuredSettings`, so the provider-routing block still wins on `env` and `apiKeyHelper`: compute the Paperclip settings before `configuredSettings` and use `userProvidedOptions?.settings ?? paperclipSdk.settings ?? (modelConfig ? … : undefined)`.
+- Patch `acp-agent.js`: right after `...userProvidedOptions,` inside `const options = {`, insert `...readPaperclipClaudeSdkOptions(),`. Define that function near the top of the file: parse `process.env.PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON`, return `{}` on absence or error, and pick only the keys `settingSources, settings, strictMcpConfig, fallbackModel, allowedTools, disallowedTools, extraArgs`. For `extraArgs` and `disallowedTools`, merge into the later ACP-controlled spreads instead: change `extraArgs: {...userProvidedOptions?.extraArgs, ...` to also spread `readPaperclipClaudeSdkOptions().extraArgs`, and `disallowedTools: [...(userProvidedOptions?.disallowedTools||[]), ...(paperclipSdk.disallowedTools||[]), ...disallowedTools]`. The `settings` merge must be a deep-merge of `settings` with `configuredSettings`, so the provider-routing block still wins on `env` and `apiKeyHelper`: compute the Paperclip settings before `configuredSettings` and use `userProvidedOptions?.settings ?? paperclipSdk.settings ?? (modelConfig ? … : undefined)`.
 
 - [ ] **Step 1: Failing test** `acp.native.test.ts`:
   - `buildClaudeAcpConfig({claudeHome:"company", nativeMcp:"disabled", fallbackModel:"claude-sonnet-5", extraArgs:["--foo","1"]}, {}, {companyId:"c1", hasPaperclipMcp:true})` → `env.CLAUDE_CONFIG_DIR` ends with `c1/claude-home` (with `PAPERCLIP_HOME` set to a tmp dir), and the parsed JSON has `strictMcpConfig:true`, `fallbackModel`, `extraArgs:{foo:"1"}`, `settingSources:["user","project","local"]`;

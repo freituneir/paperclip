@@ -8,9 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockAgentService = vi.hoisted(() => ({ getById: vi.fn() }));
 const mockToolAccessService = vi.hoisted(() => ({ getEffectiveProfilesForAgent: vi.fn() }));
+const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
 vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
+  accessService: () => mockAccessService,
 }));
 vi.mock("../services/agents.js", () => ({
   agentService: () => mockAgentService,
@@ -66,6 +68,8 @@ describe("claude home routes", () => {
     mockLogActivity.mockReset();
     mockAgentService.getById.mockReset();
     mockToolAccessService.getEffectiveProfilesForAgent.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({ allowed: true, reason: "allow_explicit_grant", explanation: "ok" });
     rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-home-routes-"));
     process.env.PAPERCLIP_CLAUDE_HOME_ROOT = rootDir;
   });
@@ -263,6 +267,205 @@ describe("claude home routes", () => {
       .put(`/api/companies/company-2/claude-home/claude-md`)
       .send({ content: "x" });
     expect(put.status).toBe(403);
+  });
+
+  describe("agents:create permission", () => {
+    function deny() {
+      mockAccessService.decide.mockResolvedValue({
+        allowed: false,
+        reason: "deny_missing_grant",
+        explanation: "Missing permission: agents:create",
+      });
+    }
+
+    it("checks agents:create for the company on every Claude Home route", async () => {
+      const app = await createApp();
+      const res = await request(app).get(`/api/companies/${COMPANY_ID}/claude-home`);
+      expect(res.status).toBe(200);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "agents:create",
+          resource: { type: "company", companyId: COMPANY_ID },
+        }),
+      );
+    });
+
+    it("returns 403 for GET and every write when agents:create is denied, without touching disk", async () => {
+      await fs.mkdir(homeDir(), { recursive: true });
+      await fs.writeFile(
+        path.join(homeDir(), ".claude.json"),
+        JSON.stringify({ mcpServers: { keep: { command: "npx" } } }),
+      );
+      deny();
+      const app = await createApp();
+      const base = `/api/companies/${COMPANY_ID}/claude-home`;
+      const responses = [
+        await request(app).get(base),
+        await request(app).put(`${base}/settings`).send({ settings: { hooks: { Stop: [] } } }),
+        await request(app).put(`${base}/claude-md`).send({ content: "x" }),
+        await request(app).put(`${base}/mcp-servers/evil`).send({ config: { command: "sh", args: ["-c", "id"] } }),
+        await request(app).delete(`${base}/mcp-servers/keep`),
+      ];
+      expect(responses.map((res) => res.status)).toEqual([403, 403, 403, 403, 403]);
+      expect(JSON.stringify(responses[0].body)).not.toContain("npx");
+      await expect(fs.stat(path.join(homeDir(), "settings.json"))).rejects.toThrow();
+      await expect(fs.stat(path.join(homeDir(), "CLAUDE.md"))).rejects.toThrow();
+      const onDisk = JSON.parse(await fs.readFile(path.join(homeDir(), ".claude.json"), "utf8"));
+      expect(onDisk).toEqual({ mcpServers: { keep: { command: "npx" } } });
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("keeps claude-setup readable without agents:create", async () => {
+      deny();
+      mockAgentService.getById.mockResolvedValue({
+        id: AGENT_ID,
+        companyId: COMPANY_ID,
+        name: "Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      });
+      mockToolAccessService.getEffectiveProfilesForAgent.mockResolvedValue({
+        agentId: AGENT_ID, profiles: [], bindings: [], entries: [], allowedTools: [], allowedToolNames: [], installedConnections: [],
+      });
+      const app = await createApp();
+      const res = await request(app).get(`/api/companies/${COMPANY_ID}/agents/${AGENT_ID}/claude-setup`);
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe("MCP redaction restore", () => {
+    const base = `/api/companies/${COMPANY_ID}/claude-home/mcp-servers`;
+
+    async function seed(servers: Record<string, unknown>) {
+      await fs.mkdir(homeDir(), { recursive: true });
+      await fs.writeFile(path.join(homeDir(), ".claude.json"), JSON.stringify({ mcpServers: servers }));
+    }
+
+    async function readServers() {
+      return JSON.parse(await fs.readFile(path.join(homeDir(), ".claude.json"), "utf8")).mcpServers;
+    }
+
+    it("rejects a kept redacted header when the url changes", async () => {
+      await seed({ linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } } });
+      const app = await createApp();
+      const res = await request(app)
+        .put(`${base}/linear`)
+        .send({ config: { type: "http", url: "https://evil.example/mcp", headers: { Authorization: "__redacted__" } } });
+      expect(res.status).toBe(400);
+      expect(res.body.error ?? res.body.message).toContain("Re-enter secrets");
+      expect((await readServers()).linear.url).toBe("https://mcp.linear.app/mcp");
+    });
+
+    it("rejects a kept redacted header when the type changes", async () => {
+      await seed({ linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } } });
+      const app = await createApp();
+      const res = await request(app)
+        .put(`${base}/linear`)
+        .send({ config: { type: "sse", url: "https://mcp.linear.app/mcp", headers: { Authorization: "__redacted__" } } });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a kept redacted env value when the stdio command or args change", async () => {
+      await seed({ local: { command: "npx", args: ["-y", "good"], env: { KEY: "secret" } } });
+      const app = await createApp();
+      const cmd = await request(app)
+        .put(`${base}/local`)
+        .send({ config: { command: "sh", args: ["-y", "good"], env: { KEY: "__redacted__" } } });
+      expect(cmd.status).toBe(400);
+      const args = await request(app)
+        .put(`${base}/local`)
+        .send({ config: { command: "npx", args: ["-y", "evil"], env: { KEY: "__redacted__" } } });
+      expect(args.status).toBe(400);
+      expect((await readServers()).local).toEqual({ command: "npx", args: ["-y", "good"], env: { KEY: "secret" } });
+    });
+
+    it("allows a destination change when secrets are re-entered", async () => {
+      await seed({ linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } } });
+      const app = await createApp();
+      const res = await request(app)
+        .put(`${base}/linear`)
+        .send({ config: { type: "http", url: "https://new.example/mcp", headers: { Authorization: "Bearer fresh" } } });
+      expect(res.status).toBe(200);
+      expect((await readServers()).linear.headers).toEqual({ Authorization: "Bearer fresh" });
+    });
+
+    it("still restores redacted values when the destination is unchanged", async () => {
+      await seed({ linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } } });
+      const app = await createApp();
+      const res = await request(app)
+        .put(`${base}/linear`)
+        .send({ config: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "__redacted__", X: "y" } } });
+      expect(res.status).toBe(200);
+      expect((await readServers()).linear.headers).toEqual({ Authorization: "Bearer secret", X: "y" });
+    });
+  });
+
+  describe("concurrent writes", () => {
+    const base = `/api/companies/${COMPANY_ID}/claude-home`;
+    const userConfigPath = () => path.join(homeDir(), ".claude.json");
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("serializes concurrent MCP upserts so none are lost", async () => {
+      await fs.mkdir(homeDir(), { recursive: true });
+      await fs.writeFile(userConfigPath(), JSON.stringify({ numStartups: 1 }));
+      const app = await createApp();
+      const names = ["a", "b", "c", "d", "e", "f"];
+      const results = await Promise.all(
+        names.map((name) =>
+          request(app).put(`${base}/mcp-servers/${name}`).send({ config: { command: "npx", args: [name] } }),
+        ),
+      );
+      expect(results.map((res) => res.status)).toEqual(names.map(() => 200));
+      const onDisk = JSON.parse(await fs.readFile(userConfigPath(), "utf8"));
+      expect(Object.keys(onDisk.mcpServers).sort()).toEqual(names);
+      expect(onDisk.numStartups).toBe(1);
+    });
+
+    it("recomputes from fresh content when .claude.json changes during a save", async () => {
+      await fs.mkdir(homeDir(), { recursive: true });
+      await fs.writeFile(userConfigPath(), JSON.stringify({ numStartups: 1 }));
+      const realReadFile = fs.readFile.bind(fs);
+      let reads = 0;
+      vi.spyOn(fs, "readFile").mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+        const result = await realReadFile(...args);
+        if (String(args[0]) === userConfigPath()) {
+          reads += 1;
+          // Claude Code rewrites the file right after our first read.
+          if (reads === 1) await fs.writeFile(userConfigPath(), JSON.stringify({ numStartups: 2, tipsHistory: { x: 1 } }));
+        }
+        return result;
+      }) as typeof fs.readFile);
+      const app = await createApp();
+      const res = await request(app).put(`${base}/mcp-servers/linear`).send({ config: { command: "npx" } });
+      expect(res.status).toBe(200);
+      const onDisk = JSON.parse(await realReadFile(userConfigPath(), "utf8"));
+      expect(onDisk).toEqual({ numStartups: 2, tipsHistory: { x: 1 }, mcpServers: { linear: { command: "npx" } } });
+    });
+
+    it("returns 409 when settings.json keeps changing during a save", async () => {
+      await fs.mkdir(homeDir(), { recursive: true });
+      const settingsPath = path.join(homeDir(), "settings.json");
+      await fs.writeFile(settingsPath, JSON.stringify({ model: "opus" }));
+      const realReadFile = fs.readFile.bind(fs);
+      let counter = 0;
+      vi.spyOn(fs, "readFile").mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+        const result = await realReadFile(...args);
+        if (String(args[0]) === settingsPath) {
+          counter += 1;
+          await fs.writeFile(settingsPath, JSON.stringify({ model: "opus", n: counter }));
+        }
+        return result;
+      }) as typeof fs.readFile);
+      const app = await createApp();
+      const res = await request(app).put(`${base}/settings`).send({ settings: { model: "sonnet" } });
+      expect(res.status).toBe(409);
+      expect(res.body.error ?? res.body.message).toContain("Claude Home changed while saving");
+      const onDisk = JSON.parse(await realReadFile(settingsPath, "utf8"));
+      expect(onDisk.model).toBe("opus");
+    });
   });
 
   describe("claude-setup", () => {

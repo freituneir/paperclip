@@ -4,6 +4,7 @@ import {
   buildClaudeSdkOptions,
   extraArgsToSdkRecord,
   parseClaudeNativeOptions,
+  parseExtraArgsForSdk,
   settingsOverlayWithPermission,
 } from "./native-options.js";
 
@@ -54,6 +55,29 @@ describe("extraArgsToSdkRecord", () => {
 
   it("ignores stray positional values", () => {
     expect(extraArgsToSdkRecord(["stray", "--flag"])).toEqual({ flag: null });
+  });
+});
+
+describe("parseExtraArgsForSdk", () => {
+  it("parses --flag value, --flag=value and bare --flag without warnings", () => {
+    expect(parseExtraArgsForSdk(["--foo", "bar", "--baz", "--q=1"])).toEqual({
+      record: { foo: "bar", baz: null, q: "1" },
+      warnings: [],
+    });
+  });
+
+  it("warns instead of silently dropping a flag followed by 2+ values", () => {
+    const parsed = parseExtraArgsForSdk(["--allowedTools", "Read", "Write", "--verbose"]);
+    expect(parsed.record).toEqual({ allowedTools: "Read", verbose: null });
+    expect(parsed.warnings).toEqual([
+      'extraArgs: --allowedTools is followed by 2 values (Read, Write); the ACP engine passes only one value per flag, so "Write" was ignored. Use --flag=value or a single value.',
+    ]);
+  });
+
+  it("warns about positional values that do not follow a flag", () => {
+    expect(parseExtraArgsForSdk(["stray", "--flag"]).warnings).toEqual([
+      'extraArgs: "stray" does not follow a flag and was ignored on the ACP engine.',
+    ]);
   });
 });
 

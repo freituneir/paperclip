@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { parseObject, resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
@@ -18,15 +17,28 @@ import {
 /** Object keys whose values are secrets: settings `env` and MCP `headers`/`env`. */
 const SECRET_MAP_KEYS = new Set(["env", "headers"]);
 
-/** Settings keys that would override a managed AI connection's credential. */
+/** Top-level settings keys that supply or refresh credentials outside a managed AI connection. */
+const AUTH_CONFLICT_SETTINGS_KEYS = ["apiKeyHelper", "awsCredentialExport", "awsAuthRefresh"] as const;
+
+/**
+ * Settings `env` keys that would override a managed AI connection's
+ * credential, provider routing, or transport (proxy / TLS).
+ */
 const AUTH_CONFLICT_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "CLAUDE_CODE_OAUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_BEDROCK_BASE_URL",
+  "ANTHROPIC_VERTEX_BASE_URL",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "ANTHROPIC_CUSTOM_HEADERS",
   "CLAUDE_CODE_USE_BEDROCK",
   "CLAUDE_CODE_USE_VERTEX",
   "CLAUDE_CODE_USE_FOUNDRY",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
 ] as const;
 
 function nonEmpty(value: string | undefined): string | null {
@@ -63,25 +75,6 @@ export function resolveClaudeHomeDir(env: NodeJS.ProcessEnv, companyId: string):
 /** mkdir -p with mode 0o700. Cheap and idempotent. */
 export async function ensureClaudeHomeDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-}
-
-/**
- * One-time login carry-over: copy `.credentials.json` from the host's default
- * Claude config into a Claude Home that has none, so switching an agent to the
- * company home does not log it out. A copy (not a symlink) keeps later token
- * refreshes inside the home. Returns true when a file was copied.
- */
-export async function seedClaudeHomeCredentials(homeDir: string, sourceConfigDir: string): Promise<boolean> {
-  if (path.resolve(homeDir) === path.resolve(sourceConfigDir)) return false;
-  const target = path.join(homeDir, ".credentials.json");
-  const source = path.join(sourceConfigDir, ".credentials.json");
-  try {
-    await fs.copyFile(source, target, fsConstants.COPYFILE_EXCL);
-  } catch {
-    return false;
-  }
-  await fs.chmod(target, 0o600);
-  return true;
 }
 
 /**
@@ -131,8 +124,10 @@ export function restoreRedactedSecrets(next: unknown, previous: unknown): unknow
 export function findHomeAuthConflicts(settings: Record<string, unknown> | null): string[] {
   if (!settings) return [];
   const conflicts: string[] = [];
-  const helper = settings.apiKeyHelper;
-  if (helper !== undefined && helper !== null && helper !== "") conflicts.push("apiKeyHelper");
+  for (const key of AUTH_CONFLICT_SETTINGS_KEYS) {
+    const value = settings[key];
+    if (value !== undefined && value !== null && value !== "") conflicts.push(key);
+  }
   const env = parseObject(settings.env);
   for (const key of AUTH_CONFLICT_ENV_KEYS) {
     const value = env[key];
@@ -222,6 +217,31 @@ function summarizeMcpServers(
     .filter((entry): entry is [string, Record<string, unknown>] => isPlainObject(entry[1]))
     .map(([name, cfg]) => summarizeMcpServer(name, cfg, origin))
     .sort(byName);
+}
+
+/**
+ * Auth conflicts in the project settings Claude loads from the run cwd
+ * (`.claude/settings.json`, `.claude/settings.local.json`). Missing or
+ * malformed files are skipped. Paperclip's own ACP engine writes only
+ * permissions into settings.local.json, which never conflicts.
+ */
+export async function findProjectSettingsAuthConflicts(
+  cwd: string,
+): Promise<{ file: string; conflicts: string[] }[]> {
+  const found: { file: string; conflicts: string[] }[] = [];
+  for (const name of ["settings.json", "settings.local.json"]) {
+    const file = path.join(cwd, ".claude", name);
+    const result = await readJsonObjectFile(file);
+    if (result.status !== "ok") continue;
+    const conflicts = findHomeAuthConflicts(result.value);
+    if (conflicts.length > 0) found.push({ file, conflicts });
+  }
+  return found;
+}
+
+/** Whether a Claude config dir holds a file-based login (`.credentials.json`). */
+export async function claudeConfigDirHasCredentialsFile(dir: string): Promise<boolean> {
+  return fs.access(path.join(dir, ".credentials.json")).then(() => true, () => false);
 }
 
 /** Servers from `<cwd>/.mcp.json`, origin "project". Missing or malformed files yield []. */

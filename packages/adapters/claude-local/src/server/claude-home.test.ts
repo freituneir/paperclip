@@ -11,7 +11,6 @@ import {
   redactClaudeSecrets,
   resolveClaudeHomeDir,
   restoreRedactedSecrets,
-  seedClaudeHomeCredentials,
   summarizeMcpServer,
 } from "./claude-home.js";
 
@@ -223,6 +222,50 @@ describe("findHomeAuthConflicts", () => {
       "env.ANTHROPIC_API_KEY",
     ]);
     expect(findHomeAuthConflicts(null)).toEqual([]);
+  });
+
+  it("flags cloud credential helpers, provider routing, proxy and TLS env keys", () => {
+    const env = Object.fromEntries([
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_BEDROCK_BASE_URL",
+      "ANTHROPIC_VERTEX_BASE_URL",
+      "AWS_BEARER_TOKEN_BEDROCK",
+      "ANTHROPIC_CUSTOM_HEADERS",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "CLAUDE_CODE_USE_FOUNDRY",
+      "HTTPS_PROXY",
+      "HTTP_PROXY",
+      "NODE_TLS_REJECT_UNAUTHORIZED",
+      "UNRELATED",
+    ].map((key) => [key, "1"]));
+    expect(findHomeAuthConflicts({
+      apiKeyHelper: "/bin/key",
+      awsCredentialExport: "/bin/aws-export",
+      awsAuthRefresh: "aws sso login",
+      env,
+    })).toEqual([
+      "apiKeyHelper",
+      "awsCredentialExport",
+      "awsAuthRefresh",
+      "env.ANTHROPIC_API_KEY",
+      "env.ANTHROPIC_AUTH_TOKEN",
+      "env.CLAUDE_CODE_OAUTH_TOKEN",
+      "env.ANTHROPIC_BASE_URL",
+      "env.ANTHROPIC_BEDROCK_BASE_URL",
+      "env.ANTHROPIC_VERTEX_BASE_URL",
+      "env.AWS_BEARER_TOKEN_BEDROCK",
+      "env.ANTHROPIC_CUSTOM_HEADERS",
+      "env.CLAUDE_CODE_USE_BEDROCK",
+      "env.CLAUDE_CODE_USE_VERTEX",
+      "env.CLAUDE_CODE_USE_FOUNDRY",
+      "env.HTTPS_PROXY",
+      "env.HTTP_PROXY",
+      "env.NODE_TLS_REJECT_UNAUTHORIZED",
+    ]);
     expect(findHomeAuthConflicts({ model: "opus" })).toEqual([]);
   });
 });
@@ -246,26 +289,5 @@ describe("summarizeMcpServer / readProjectMcpServers", () => {
     expect(await readProjectMcpServers(cwd)).toEqual([
       { name: "db", origin: "project", transport: "stdio", target: "db-mcp (0 args)", governed: false },
     ]);
-  });
-});
-
-describe("seedClaudeHomeCredentials", () => {
-  it("copies .credentials.json once when the home has none", async () => {
-    const source = await makeTmpDir();
-    const home = await makeTmpDir();
-    await writeFile(source, ".credentials.json", '{"claudeAiOauth":{"accessToken":"a"}}');
-    expect(await seedClaudeHomeCredentials(home, source)).toBe(true);
-    expect(await fs.readFile(path.join(home, ".credentials.json"), "utf8")).toContain('"a"');
-    expect((await fs.stat(path.join(home, ".credentials.json"))).mode & 0o777).toBe(0o600);
-    await writeFile(source, ".credentials.json", '{"claudeAiOauth":{"accessToken":"b"}}');
-    expect(await seedClaudeHomeCredentials(home, source)).toBe(false);
-    expect(await fs.readFile(path.join(home, ".credentials.json"), "utf8")).toContain('"a"');
-  });
-
-  it("does nothing when the source has no credentials or is the home itself", async () => {
-    const source = await makeTmpDir();
-    const home = await makeTmpDir();
-    expect(await seedClaudeHomeCredentials(home, source)).toBe(false);
-    expect(await seedClaudeHomeCredentials(home, home)).toBe(false);
   });
 });

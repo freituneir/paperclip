@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "./types";
 import { Field, help } from "../components/agent-config-primitives";
 
@@ -121,6 +121,14 @@ export function PayloadTemplateJsonField({
   );
 }
 
+/**
+ * Lets an edit form learn which JSON object drafts are currently invalid. An
+ * invalid edit draft never reaches the form overlay (the last valid value
+ * stays there), so the form must refuse to save while any draft is invalid;
+ * otherwise it would silently persist the stale value. `null` outside a form.
+ */
+export const JsonDraftValidityContext = createContext<((key: string, invalid: boolean) => void) | null>(null);
+
 type JsonObjectCreateKey = {
   [K in keyof CreateConfigValues]-?: NonNullable<CreateConfigValues[K]> extends string ? K : never;
 }[keyof CreateConfigValues];
@@ -172,6 +180,14 @@ export function JsonObjectConfigField({
 
   const value = isCreate ? String(values?.[createKey] ?? "") : draft;
   const error = jsonObjectDraftError(value);
+  const reportValidity = useContext(JsonDraftValidityContext);
+  const invalidEditDraft = !isCreate && error !== null;
+
+  useEffect(() => {
+    if (!reportValidity) return;
+    reportValidity(configKey, invalidEditDraft);
+    return () => reportValidity(configKey, false);
+  }, [reportValidity, configKey, invalidEditDraft]);
 
   return (
     <Field label={label} hint={hint}>

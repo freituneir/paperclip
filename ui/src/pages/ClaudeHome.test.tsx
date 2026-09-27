@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CLAUDE_REDACTED_VALUE, type ClaudeHomeInventory } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { ClaudeHome } from "./ClaudeHome";
 import {
   hasRedactedSecrets,
@@ -156,6 +157,18 @@ describe("ClaudeHome", () => {
     mockClaudeHomeApi.get.mockRejectedValue(new Error("Board access required"));
     await renderPage();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Board access required");
+  });
+
+  it("explains the missing agent-management permission on 403 without a retry button", async () => {
+    mockClaudeHomeApi.get.mockRejectedValue(
+      new ApiError("Missing permission: agents:create", 403, { error: "Missing permission: agents:create" }),
+    );
+    await renderPage();
+    const notice = container.querySelector('[data-testid="claude-home-forbidden"]');
+    expect(notice?.textContent).toContain("You need permission to manage agents to view Claude Home");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent?.includes("Try again"))).toBe(false);
+    expect(mockClaudeHomeApi.get).toHaveBeenCalledTimes(1);
   });
 
   it("shows empty states that explain how to add capabilities natively", async () => {

@@ -504,6 +504,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     configEnv,
     managedAiConnection: Boolean(config.managedAiConnection),
     companyId: agent.companyId,
+    cwd: executionTargetIsRemote ? null : cwd,
+    runEnv: { ...process.env, ...env },
     onLog,
   });
   const claudeHomeActive = claudeHomeRun.active;
@@ -600,15 +602,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const localMcpConfigDir = path.dirname(localMcpConfigPath);
   const sharedClaudeConfigDir = claudeHomeDir
     ?? (config.managedAiConnection ? asString(configEnv.CLAUDE_CONFIG_DIR, "") : resolveSharedClaudeConfigDir(process.env));
-  // Native options: the permission mode and settings overlay apply only to
-  // local targets. Remote targets keep the curated --allowedTools list.
-  const localPermissionMode = executionTargetIsRemote ? null : native.permissionMode;
-  const cliNativeOptions = { ...native, permissionMode: localPermissionMode };
+  // Native options: the permission mode, settings overlay, and tool lists
+  // apply only to local targets (as on ACP). Remote targets keep the curated
+  // --allowedTools list; fallbackModel is harmless and passes through.
+  const localProcessUid = process.getuid?.() ?? null;
+  // Claude Code refuses bypassPermissions as root; fall back to the legacy
+  // root-safe curated --allowedTools list instead of failing to start.
+  const rootBypassFallback =
+    !executionTargetIsRemote && native.permissionMode === "bypassPermissions" && localProcessUid === 0;
+  const localPermissionMode = executionTargetIsRemote || rootBypassFallback ? null : native.permissionMode;
+  const cliNativeOptions = executionTargetIsRemote
+    ? { ...native, permissionMode: null, settingsOverlay: null, allowedTools: [], disallowedTools: [] }
+    : { ...native, permissionMode: localPermissionMode };
+  if (rootBypassFallback) {
+    manifestWarnings.push(
+      'claudePermissionMode "bypassPermissions" cannot be used when Paperclip runs as root (Claude Code refuses to start); using the curated --allowedTools list instead.',
+    );
+  }
   if (executionTargetIsRemote && native.permissionMode) {
     manifestWarnings.push(`claudePermissionMode "${native.permissionMode}" is not applied on remote execution targets.`);
   }
   if (executionTargetIsRemote && native.settingsOverlay) {
     manifestWarnings.push("settingsOverlay is not applied on remote execution targets.");
+  }
+  if (executionTargetIsRemote && native.allowedTools.length > 0) {
+    manifestWarnings.push("allowedTools is not applied on remote execution targets; the curated remote --allowedTools list is used.");
+  }
+  if (executionTargetIsRemote && native.disallowedTools.length > 0) {
+    manifestWarnings.push("disallowedTools is not applied on remote execution targets.");
   }
   const runSettingsOverlay = executionTargetIsRemote ? null : settingsOverlayWithPermission(cliNativeOptions);
   const runSettingsFilePath = runSettingsOverlay
@@ -621,9 +642,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const legacyPermissionArgs = localPermissionMode
     ? []
     : buildClaudeExecutionPermissionArgs({
-        dangerouslySkipPermissions,
+        // The operator asked for bypass; honor it the root-safe way.
+        dangerouslySkipPermissions: dangerouslySkipPermissions || rootBypassFallback,
         targetIsRemote: executionTargetIsRemote,
-        localProcessUid: process.getuid?.() ?? null,
+        localProcessUid,
       });
   const manifestPermission: ClaudeLaunchManifest["permission"] = localPermissionMode
     ? { mode: localPermissionMode, source: "claudePermissionMode" }

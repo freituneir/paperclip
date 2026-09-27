@@ -16,11 +16,12 @@ import {
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import {
   CLAUDE_HOME_MCP_SERVER_NAME_PATTERN,
+  CLAUDE_REDACTED_VALUE,
   isToolConnectionAttentionHealth,
   type ClaudeHomeInventory,
   type ClaudeLaunchManifest,
 } from "@paperclipai/shared";
-import { badRequest, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, notFound, unprocessable } from "../errors.js";
 import { agentService } from "./agents.js";
 import { toolAccessService } from "./tool-access.js";
 
@@ -42,35 +43,74 @@ function asTrimmedString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-type JsonObjectRead =
-  | { status: "missing" }
-  | { status: "ok"; value: Record<string, unknown> }
-  | { status: "error"; error: string };
-
-async function readJsonObject(filePath: string): Promise<JsonObjectRead> {
-  let raw: string;
+/** Raw file contents, or null when the file does not exist. */
+async function readRawOrNull(filePath: string): Promise<string | null> {
   try {
-    raw = await fs.readFile(filePath, "utf8");
+    return await fs.readFile(filePath, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { status: "missing" };
-    return { status: "error", error: error instanceof Error ? error.message : String(error) };
-  }
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isPlainObject(parsed) ? { status: "ok", value: parsed } : { status: "error", error: "Expected a JSON object" };
-  } catch (error) {
-    return { status: "error", error: error instanceof Error ? error.message : String(error) };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 
-/** Read a JSON object file for a write; a missing file is `{}`, a broken one is a 422 (never clobbered). */
-async function readJsonObjectForWrite(filePath: string, label: string): Promise<Record<string, unknown>> {
-  const result = await readJsonObject(filePath);
-  if (result.status === "missing") return {};
-  if (result.status === "error") {
-    throw unprocessable(`${label} could not be parsed; fix or remove it before saving: ${result.error}`);
+/** Parse a JSON object file for a write; a missing file is `{}`, a broken one is a 422 (never clobbered). */
+function parseJsonObjectForWrite(raw: string | null, label: string): Record<string, unknown> {
+  if (raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw unprocessable(`${label} could not be parsed; fix or remove it before saving: ${message}`);
   }
-  return result.value;
+  if (!isPlainObject(parsed)) {
+    throw unprocessable(`${label} could not be parsed; fix or remove it before saving: Expected a JSON object`);
+  }
+  return parsed;
+}
+
+// In-process per-company mutex for Claude Home read-modify-write. Claude Code
+// itself rewrites `.claude.json` outside this process, which the re-read check
+// in updateJsonObjectFile covers.
+const companyLocks = new Map<string, Promise<void>>();
+
+async function withCompanyLock<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = companyLocks.get(companyId) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous.then(() => current);
+  companyLocks.set(companyId, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (companyLocks.get(companyId) === tail) companyLocks.delete(companyId);
+  }
+}
+
+const MAX_WRITE_ATTEMPTS = 3;
+
+/**
+ * Read → compute → re-read immediately before the atomic rename. If the file
+ * changed since the first read (another writer, e.g. Claude Code), recompute
+ * from the fresh content; after MAX_WRITE_ATTEMPTS give up with a 409.
+ */
+async function updateJsonObjectFile(
+  filePath: string,
+  label: string,
+  compute: (current: Record<string, unknown>) => Record<string, unknown>,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_WRITE_ATTEMPTS; attempt += 1) {
+    const raw = await readRawOrNull(filePath);
+    const next = compute(parseJsonObjectForWrite(raw, label));
+    if ((await readRawOrNull(filePath)) !== raw) continue;
+    await writeJsonAtomic(filePath, next);
+    return;
+  }
+  throw conflict("Claude Home changed while saving; retry");
 }
 
 /** Write via a temp file in the same directory, then rename. */
@@ -128,6 +168,37 @@ export function assertValidMcpServerConfig(config: Record<string, unknown>): voi
   }
 }
 
+function containsRedactedValue(value: unknown): boolean {
+  if (value === CLAUDE_REDACTED_VALUE) return true;
+  if (Array.isArray(value)) return value.some(containsRedactedValue);
+  if (isPlainObject(value)) return Object.values(value).some(containsRedactedValue);
+  return false;
+}
+
+/** The fields that decide where an MCP server's headers/env are sent. */
+function mcpDestination(config: unknown): string {
+  const entry = isPlainObject(config) ? config : {};
+  const command = asTrimmedString(entry.command);
+  return JSON.stringify({
+    transport: asTrimmedString(entry.type) || (command ? "stdio" : ""),
+    url: asTrimmedString(entry.url),
+    command,
+    args: Array.isArray(entry.args) ? entry.args : [],
+  });
+}
+
+/**
+ * Restore redacted placeholders from the stored entry, but only when the
+ * destination (transport, url, stdio command/args) is unchanged; otherwise a
+ * kept placeholder would send the stored secret to a new host or program.
+ */
+function restoreMcpServerSecrets(config: Record<string, unknown>, previous: unknown): unknown {
+  if (containsRedactedValue(config) && mcpDestination(config) !== mcpDestination(previous)) {
+    throw badRequest("Re-enter secrets when changing the server's address or command");
+  }
+  return restoreRedactedSecrets(config, previous);
+}
+
 export interface ClaudeHomeServiceDeps {
   env?: NodeJS.ProcessEnv;
 }
@@ -159,10 +230,13 @@ export function claudeHomeService(db: Db, deps: ClaudeHomeServiceDeps = {}) {
     if (!isPlainObject(next)) throw badRequest("settings must be a JSON object");
     const dir = await ensureHome(companyId);
     const filePath = path.join(dir, SETTINGS_FILE);
-    const previous = await readJsonObjectForWrite(filePath, SETTINGS_FILE);
-    const restored = restoreRedactedSecrets(next, previous);
-    if (!isPlainObject(restored)) throw badRequest("settings must be a JSON object");
-    await writeJsonAtomic(filePath, restored);
+    await withCompanyLock(companyId, () =>
+      updateJsonObjectFile(filePath, SETTINGS_FILE, (previous) => {
+        const restored = restoreRedactedSecrets(next, previous);
+        if (!isPlainObject(restored)) throw badRequest("settings must be a JSON object");
+        return restored;
+      }),
+    );
     return readClaudeHomeInventory(dir);
   }
 
@@ -182,27 +256,35 @@ export function claudeHomeService(db: Db, deps: ClaudeHomeServiceDeps = {}) {
     if (!isPlainObject(config)) throw badRequest("config must be a JSON object");
     const dir = await ensureHome(companyId);
     const filePath = path.join(dir, USER_CONFIG_FILE);
-    const userConfig = await readJsonObjectForWrite(filePath, USER_CONFIG_FILE);
-    const servers = isPlainObject(userConfig.mcpServers) ? userConfig.mcpServers : {};
-    const previous = servers[name];
-    const restored = restoreRedactedSecrets(config, previous);
-    if (!isPlainObject(restored)) throw badRequest("config must be a JSON object");
-    assertValidMcpServerConfig(restored);
-    await writeJsonAtomic(filePath, { ...userConfig, mcpServers: { ...servers, [name]: restored } });
-    return { inventory: await readClaudeHomeInventory(dir), created: previous === undefined };
+    let created = false;
+    await withCompanyLock(companyId, () =>
+      updateJsonObjectFile(filePath, USER_CONFIG_FILE, (userConfig) => {
+        const servers = isPlainObject(userConfig.mcpServers) ? userConfig.mcpServers : {};
+        const previous = servers[name];
+        const restored = restoreMcpServerSecrets(config, previous);
+        if (!isPlainObject(restored)) throw badRequest("config must be a JSON object");
+        assertValidMcpServerConfig(restored);
+        created = previous === undefined;
+        return { ...userConfig, mcpServers: { ...servers, [name]: restored } };
+      }),
+    );
+    return { inventory: await readClaudeHomeInventory(dir), created };
   }
 
   async function deleteMcpServer(companyId: string, name: string): Promise<ClaudeHomeInventory> {
     assertValidMcpServerName(name);
     const dir = await ensureHome(companyId);
     const filePath = path.join(dir, USER_CONFIG_FILE);
-    const userConfig = await readJsonObjectForWrite(filePath, USER_CONFIG_FILE);
-    const servers = isPlainObject(userConfig.mcpServers) ? userConfig.mcpServers : {};
-    if (!Object.prototype.hasOwnProperty.call(servers, name)) {
-      throw notFound(`MCP server "${name}" not found in Claude Home`);
-    }
-    const { [name]: _removed, ...rest } = servers;
-    await writeJsonAtomic(filePath, { ...userConfig, mcpServers: rest });
+    await withCompanyLock(companyId, () =>
+      updateJsonObjectFile(filePath, USER_CONFIG_FILE, (userConfig) => {
+        const servers = isPlainObject(userConfig.mcpServers) ? userConfig.mcpServers : {};
+        if (!Object.prototype.hasOwnProperty.call(servers, name)) {
+          throw notFound(`MCP server "${name}" not found in Claude Home`);
+        }
+        const { [name]: _removed, ...rest } = servers;
+        return { ...userConfig, mcpServers: rest };
+      }),
+    );
     return readClaudeHomeInventory(dir);
   }
 

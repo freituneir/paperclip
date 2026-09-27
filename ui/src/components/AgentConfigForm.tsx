@@ -73,6 +73,7 @@ import {
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
 import { ClaudeLocalAdvancedFields } from "../adapters/claude-local/config-fields";
+import { JsonDraftValidityContext } from "../adapters/runtime-json-fields";
 import { MarkdownEditor } from "./MarkdownEditor";
 import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
@@ -112,6 +113,8 @@ type AgentConfigFormProps = {
   adapterModels?: AdapterModel[];
   onDirtyChange?: (dirty: boolean) => void;
   onSaveActionChange?: (save: (() => void) | null) => void;
+  /** Reports when saving is blocked (an embedded JSON editor holds an invalid draft). */
+  onSaveBlockedChange?: (blocked: boolean) => void;
   onCancelActionChange?: (cancel: (() => void) | null) => void;
   onTestActionChange?: (test: (() => void) | null) => void;
   onTestActionStateChange?: (state: { disabled: boolean; pending: boolean }) => void;
@@ -520,6 +523,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty);
 
+  // Config keys whose JSON editor holds an invalid draft. The overlay keeps the
+  // last valid value for those keys, so saving now would persist a stale value:
+  // Save is disabled and the save action refuses while this set is non-empty.
+  const [invalidJsonDrafts, setInvalidJsonDrafts] = useState<ReadonlySet<string>>(() => new Set());
+  const reportJsonDraftValidity = useCallback((key: string, invalid: boolean) => {
+    setInvalidJsonDrafts((prev) => {
+      if (prev.has(key) === invalid) return prev;
+      const next = new Set(prev);
+      if (invalid) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+  const hasInvalidJsonDraft = invalidJsonDrafts.size > 0;
+
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
   /** Read effective value: overlay if dirty, else original */
@@ -573,6 +591,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
+    if (hasInvalidJsonDraft) return;
     const flushedEnv = flushEnvironmentDraft();
     const nextOverlay = flushedEnv
       ? {
@@ -585,7 +604,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       : overlay;
     if (!isOverlayDirty(nextOverlay)) return;
     await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
-  }, [isCreate, isDirty, overlay, props]);
+  }, [isCreate, isDirty, hasInvalidJsonDraft, overlay, props]);
 
   useEffect(() => {
     if (!isCreate) {
@@ -597,12 +616,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   useEffect(() => {
     if (isCreate) return;
+    props.onSaveBlockedChange?.(hasInvalidJsonDraft);
+  }, [isCreate, hasInvalidJsonDraft, props.onSaveBlockedChange]);
+
+  useEffect(() => {
+    if (isCreate) return;
     return () => {
+      props.onSaveBlockedChange?.(false);
       props.onSaveActionChange?.(null);
       props.onCancelActionChange?.(null);
       props.onDirtyChange?.(false);
     };
-  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange]);
+  }, [isCreate, props.onDirtyChange, props.onSaveActionChange, props.onCancelActionChange, props.onSaveBlockedChange]);
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
@@ -1437,16 +1462,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   return (
+    <JsonDraftValidityContext.Provider value={isCreate ? null : reportJsonDraftValidity}>
     <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
           <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground">Unsaved changes</span>
+            <span className={cn("text-xs", hasInvalidJsonDraft ? "text-destructive" : "text-muted-foreground")}>
+              {hasInvalidJsonDraft ? "Fix invalid JSON before saving" : "Unsaved changes"}
+            </span>
             <Button
               size="sm"
               onClick={handleSave}
-              disabled={!isCreate && props.isSaving}
+              disabled={(!isCreate && props.isSaving) || hasInvalidJsonDraft}
             >
               {!isCreate && props.isSaving ? "Saving..." : "Save"}
             </Button>
@@ -2155,6 +2183,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         />
       )}
     </ConfigSections>
+    </JsonDraftValidityContext.Provider>
   );
 }
 

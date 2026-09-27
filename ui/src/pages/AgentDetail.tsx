@@ -801,6 +801,7 @@ export function AgentDetail() {
   const needsRunData = activeView === "run-detail";
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
+  const [configSaveBlocked, setConfigSaveBlocked] = useState(false);
   const [configSaving, setConfigSaving] = useState(false);
   const saveConfigActionRef = useRef<(() => void) | null>(null);
   const cancelConfigActionRef = useRef<(() => void) | null>(null);
@@ -1433,6 +1434,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaveBlockedChange={setConfigSaveBlocked}
             updatePermissions={updatePermissions}
             canConfigureProviderTrace={canUseProviderTrace}
             content="runtime"
@@ -1451,6 +1453,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaveBlockedChange={setConfigSaveBlocked}
             updatePermissions={updatePermissions}
             content="secrets"
           />
@@ -1481,6 +1484,7 @@ export function AgentDetail() {
             onSaveActionChange={setSaveConfigAction}
             onCancelActionChange={setCancelConfigAction}
             onSavingChange={setConfigSaving}
+            onSaveBlockedChange={setConfigSaveBlocked}
             updatePermissions={updatePermissions}
             content="permissions"
           />
@@ -1510,10 +1514,10 @@ export function AgentDetail() {
       )}
 
       {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
-        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configSaveBlocked ? "Fix invalid JSON before saving." : configDirty ? "You have unsaved changes." : ""}</p>
         <div className="flex gap-2">
           <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
-          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
+          <Button disabled={!configDirty || configSaving || configSaveBlocked} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
         </div>
       </footer>}
 
@@ -1957,6 +1961,7 @@ export function ConfigurationTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  onSaveBlockedChange,
   updatePermissions,
   hidePromptTemplate,
   hideInstructionsFile,
@@ -1969,6 +1974,7 @@ export function ConfigurationTab({
   onSaveActionChange: (save: (() => void) | null) => void;
   onCancelActionChange: (cancel: (() => void) | null) => void;
   onSavingChange: (saving: boolean) => void;
+  onSaveBlockedChange?: (blocked: boolean) => void;
   updatePermissions: { mutate: (permissions: AgentPermissionUpdate) => void; isPending: boolean };
   hidePromptTemplate?: boolean;
   hideInstructionsFile?: boolean;
@@ -2080,6 +2086,7 @@ export function ConfigurationTab({
         onDirtyChange={onDirtyChange}
         onSaveActionChange={onSaveActionChange}
         onCancelActionChange={onCancelActionChange}
+        onSaveBlockedChange={onSaveBlockedChange}
         hideInlineSave
         hidePromptTemplate={hidePromptTemplate}
         hideInstructionsFile={hideInstructionsFile}

@@ -6,19 +6,34 @@ import {
   claudeHomeSettingsUpdateSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { logActivity } from "../services/index.js";
+import { forbidden } from "../errors.js";
+import { accessService, logActivity } from "../services/index.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
 import { claudeHomeService } from "../services/claude-home.js";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 
-// Company Claude Home (a shared CLAUDE_CONFIG_DIR). Inventory and edits are
-// board-only; the per-agent effective setup is readable by same-company agents.
+// Company Claude Home (a shared CLAUDE_CONFIG_DIR). settings.json hooks,
+// apiKeyHelper and stdio MCP commands run on the host for every company agent,
+// and the inventory exposes those commands, args and URLs, so every inventory
+// and edit route requires a board actor with the same `agents:create`
+// permission as editing adapter commands. The per-agent effective setup (key
+// names only) stays readable by same-company actors.
 export function claudeHomeRoutes(db: Db) {
   const router = Router();
   const svc = claudeHomeService(db);
+  const access = accessService(db);
 
-  function assertBoardCompany(req: Request, companyId: string) {
-    assertCompanyAccess(req, companyId);
+  async function assertBoardCompany(req: Request, companyId: string) {
     assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "agents:create",
+      resource: { type: "company", companyId },
+    });
+    if (!decision.allowed) {
+      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    }
   }
 
   async function logClaudeHomeActivity(
@@ -45,7 +60,7 @@ export function claudeHomeRoutes(db: Db) {
 
   router.get("/companies/:companyId/claude-home", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertBoardCompany(req, companyId);
+    await assertBoardCompany(req, companyId);
     res.json(await svc.getInventory(companyId));
   });
 
@@ -54,7 +69,7 @@ export function claudeHomeRoutes(db: Db) {
     validate(claudeHomeSettingsUpdateSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertBoardCompany(req, companyId);
+      await assertBoardCompany(req, companyId);
       const inventory = await svc.saveSettings(companyId, req.body.settings);
       await logClaudeHomeActivity(req, companyId, "claude_home.settings_updated", "settings.json", {
         keys: Object.keys(req.body.settings as Record<string, unknown>).sort(),
@@ -68,7 +83,7 @@ export function claudeHomeRoutes(db: Db) {
     validate(claudeHomeClaudeMdUpdateSchema),
     async (req, res) => {
       const companyId = req.params.companyId as string;
-      assertBoardCompany(req, companyId);
+      await assertBoardCompany(req, companyId);
       const content = req.body.content as string;
       const inventory = await svc.saveClaudeMd(companyId, content);
       await logClaudeHomeActivity(req, companyId, "claude_home.claude_md_updated", "CLAUDE.md", {
@@ -84,7 +99,7 @@ export function claudeHomeRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const name = req.params.name as string;
-      assertBoardCompany(req, companyId);
+      await assertBoardCompany(req, companyId);
       const { inventory, created } = await svc.upsertMcpServer(companyId, name, req.body.config);
       const summary = inventory.mcpServers.find((server) => server.name === name);
       await logClaudeHomeActivity(req, companyId, "claude_home.mcp_server_upserted", name, {
@@ -100,7 +115,7 @@ export function claudeHomeRoutes(db: Db) {
   router.delete("/companies/:companyId/claude-home/mcp-servers/:name", async (req, res) => {
     const companyId = req.params.companyId as string;
     const name = req.params.name as string;
-    assertBoardCompany(req, companyId);
+    await assertBoardCompany(req, companyId);
     const inventory = await svc.deleteMcpServer(companyId, name);
     await logClaudeHomeActivity(req, companyId, "claude_home.mcp_server_deleted", name, { name });
     res.json(inventory);

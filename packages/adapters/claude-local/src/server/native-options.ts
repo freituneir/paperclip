@@ -75,28 +75,52 @@ export function buildClaudeCliNativeArgs(
   return args;
 }
 
-/** ["--foo","bar","--baz","--q=1"] -> { foo: "bar", baz: null, q: "1" }. Stray positional values are ignored. */
-export function extraArgsToSdkRecord(args: string[]): Record<string, string | null> {
+/**
+ * Parse CLI-style extra args into the SDK `extraArgs` record. Supported shapes:
+ * `--flag value`, `--flag=value`, and bare `--flag`. Anything else (a flag
+ * followed by 2+ values, or a value that follows no flag) cannot be expressed
+ * in the record; those tokens are dropped and reported in `warnings`.
+ */
+export function parseExtraArgsForSdk(args: string[]): {
+  record: Record<string, string | null>;
+  warnings: string[];
+} {
   const record: Record<string, string | null> = {};
-  for (let index = 0; index < args.length; index += 1) {
+  const warnings: string[] = [];
+  const isFlag = (value: string | undefined) => value !== undefined && value.startsWith("-");
+  let index = 0;
+  while (index < args.length) {
     const arg = args[index]!;
-    if (!arg.startsWith("-")) continue;
-    const flag = arg.replace(/^-+/, "");
-    if (!flag) continue;
+    index += 1;
+    const flag = isFlag(arg) ? arg.replace(/^-+/, "") : "";
+    if (!flag) {
+      warnings.push(`extraArgs: ${JSON.stringify(arg)} does not follow a flag and was ignored on the ACP engine.`);
+      continue;
+    }
     const equals = flag.indexOf("=");
     if (equals >= 0) {
       record[flag.slice(0, equals)] = flag.slice(equals + 1);
       continue;
     }
-    const next = args[index + 1];
-    if (next !== undefined && !next.startsWith("-")) {
-      record[flag] = next;
+    const values: string[] = [];
+    while (index < args.length && !isFlag(args[index])) {
+      values.push(args[index]!);
       index += 1;
-    } else {
-      record[flag] = null;
+    }
+    record[flag] = values[0] ?? null;
+    if (values.length > 1) {
+      const dropped = values.slice(1).map((value) => JSON.stringify(value)).join(", ");
+      warnings.push(
+        `extraArgs: ${arg} is followed by ${values.length} values (${values.join(", ")}); the ACP engine passes only one value per flag, so ${dropped} ${values.length === 2 ? "was" : "were"} ignored. Use --flag=value or a single value.`,
+      );
     }
   }
-  return record;
+  return { record, warnings };
+}
+
+/** ["--foo","bar","--baz","--q=1"] -> { foo: "bar", baz: null, q: "1" }. See `parseExtraArgsForSdk`. */
+export function extraArgsToSdkRecord(args: string[]): Record<string, string | null> {
+  return parseExtraArgsForSdk(args).record;
 }
 
 /**

@@ -415,6 +415,59 @@ describe("claude remote execution", () => {
     expect(result.errorCode).toBe("duplex_channel_lost");
   });
 
+  it("strips local-only native options on remote targets and warns in the manifest", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-remote-native-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    await mkdir(workspaceDir, { recursive: true });
+    const metas: Array<Record<string, unknown>> = [];
+    await execute({
+      runId: "run-remote-native",
+      agent: { id: "agent-1", companyId: "company-1", name: "Claude Coder", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli",
+        command: "claude",
+        claudePermissionMode: "acceptEdits",
+        allowedTools: ["Bash(git *)"],
+        disallowedTools: ["WebFetch"],
+        settingsOverlay: { env: { FOO: "1" } },
+        fallbackModel: "claude-sonnet-5",
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+      onMeta: async (meta) => { metas.push(meta as unknown as Record<string, unknown>); },
+    });
+    const call = runChildProcess.mock.calls.find((candidate) => (candidate[2] as string[]).includes("--print"));
+    const args = (call?.[2] ?? []) as string[];
+    expect(args).not.toContain("--permission-mode");
+    expect(args).not.toContain("--disallowedTools");
+    expect(args).not.toContain("--settings");
+    expect(args).not.toContain("Bash(git *)");
+    expect(args.filter((arg) => arg === "--allowedTools")).toHaveLength(1);
+    expect(args).toEqual(expect.arrayContaining(["--fallback-model", "claude-sonnet-5"]));
+    const manifest = metas[0]?.launchManifest as Record<string, unknown>;
+    expect(manifest).toMatchObject({ allowedTools: [], disallowedTools: [], settingsOverlayKeys: [] });
+    expect(manifest.warnings).toEqual(expect.arrayContaining([
+      'claudePermissionMode "acceptEdits" is not applied on remote execution targets.',
+      "settingsOverlay is not applied on remote execution targets.",
+      "allowedTools is not applied on remote execution targets; the curated remote --allowedTools list is used.",
+      "disallowedTools is not applied on remote execution targets.",
+    ]));
+  });
+
   describe("CLI-lane model pass-through", () => {
     async function executeWithModel(prefix: string, config: Record<string, unknown>) {
       const rootDir = await mkdtemp(path.join(os.tmpdir(), prefix));

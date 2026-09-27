@@ -4,12 +4,12 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   ensureClaudeHomeDir,
   findHomeAuthConflicts,
+  findProjectSettingsAuthConflicts,
   readClaudeHomeInventory,
   readProjectMcpServers,
   redactClaudeSecrets,
   resolveClaudeHomeDir,
   restoreRedactedSecrets,
-  seedClaudeHomeCredentials,
   summarizeMcpServer,
 } from "./claude-home.js";
 export {
@@ -17,6 +17,7 @@ export {
   buildClaudeSdkOptions,
   CLAUDE_HOME_SETTING_SOURCES,
   extraArgsToSdkRecord,
+  parseExtraArgsForSdk,
   parseClaudeNativeOptions,
   settingsOverlayWithPermission,
 } from "./native-options.js";

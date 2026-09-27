@@ -62,14 +62,14 @@ Core fields:
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
 - command (string, optional): defaults to "claude"
-- extraArgs (string[], optional): additional Claude args; applied on both engines (CLI flags, or the SDK extraArgs record on ACP)
+- extraArgs (string[], optional): additional Claude CLI args. On ACP they are passed as the SDK extraArgs record only with the company Claude Home (ignored for isolated agents and remote targets); ACP accepts --flag value, --flag=value, or bare --flag.
 - claudeHome (string, optional, default "company"): "company" points Claude at the persistent company Claude Home (CLAUDE_CONFIG_DIR = $PAPERCLIP_CLAUDE_HOME_ROOT/<companyId>, or <instanceRoot>/companies/<companyId>/claude-home) and loads user, project, and local settings, so native MCP servers, plugins, skills, subagents, slash commands, hooks, and sessions persist. "isolated" keeps the legacy per-run behavior. Local execution targets only; an explicit CLAUDE_CONFIG_DIR in env wins.
 - nativeMcp (string, optional, default "enabled"): "disabled" passes --strict-mcp-config so only Paperclip-governed MCP servers load. Native (Claude Home, project .mcp.json, plugin) MCP servers are not governed by Paperclip approvals.
-- claudePermissionMode (string, optional, default ""): bypassPermissions|auto|acceptEdits|dontAsk|plan|manual. When set on a local target it replaces the dangerouslySkipPermissions behavior with --permission-mode. Remote targets keep the curated --allowedTools list.
+- claudePermissionMode (string, optional, default ""): bypassPermissions|auto|acceptEdits|dontAsk|plan|manual. When set on a local target it replaces the dangerouslySkipPermissions behavior with --permission-mode, except bypassPermissions when Paperclip runs as root (Claude Code refuses it), which falls back to the curated --allowedTools list. Remote targets keep the curated --allowedTools list.
 - fallbackModel (string, optional): passed via --fallback-model
-- allowedTools (string[], optional): passed via --allowedTools
-- disallowedTools (string[], optional): passed via --disallowedTools
-- settingsOverlay (object, optional): Claude settings merged on top of the Claude Home settings for this agent (written to a per-run file passed with --settings; local targets only). With a managed AI connection it must not define apiKeyHelper or auth env keys.
+- allowedTools (string[], optional): passed via --allowedTools (local targets only)
+- disallowedTools (string[], optional): passed via --disallowedTools (local targets only)
+- settingsOverlay (object, optional): Claude settings merged on top of the Claude Home settings for this agent (written to a per-run file passed with --settings; local targets only). With a managed AI connection it must not define apiKeyHelper, awsCredentialExport, awsAuthRefresh, or auth/provider/proxy env keys (the same check applies to Claude Home settings.json and, with the Claude Home, the workspace .claude/settings.json and .claude/settings.local.json).
 - env (object, optional): KEY=VALUE environment variables
 - workspaceStrategy (object, optional): execution workspace strategy; currently supports { type: "git_worktree", baseRef?, branchTemplate?, worktreeParentDir? }
 - workspaceRuntime (object, optional): reserved for workspace runtime metadata; workspace runtime services are manually controlled from the workspace UI and are not auto-started by heartbeats
