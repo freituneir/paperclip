@@ -16,6 +16,9 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
+// When grouping by agent, pad with enough history that each agent's latest run is
+// likely included even if one busy agent produced most of the recent runs.
+const GROUPED_MIN_RUNS = 50;
 const DASHBOARD_LOG_POLL_INTERVAL_MS = 15_000;
 const DASHBOARD_LOG_READ_LIMIT_BYTES = 64_000;
 const DASHBOARD_MAX_CHUNKS_PER_RUN = 40;
@@ -44,6 +47,22 @@ interface ActiveAgentsPanelProps {
   queryScope?: string;
   showMoreLink?: boolean;
   showTranscripts?: boolean;
+  /** Show one card per agent (its live run, else its most recent run) instead of one card per run. */
+  groupByAgent?: boolean;
+}
+
+/**
+ * Keeps the first run seen for each agent. The live-runs endpoint returns
+ * queued/running runs first, then finished runs, each newest-first — so the
+ * first run per agent is its live run if it has one, otherwise its latest run.
+ */
+export function latestRunPerAgent(runs: LiveRunForIssue[]): LiveRunForIssue[] {
+  const seen = new Set<string>();
+  return runs.filter((run) => {
+    if (seen.has(run.agentId)) return false;
+    seen.add(run.agentId);
+    return true;
+  });
 }
 
 export function ActiveAgentsPanel({
@@ -58,23 +77,28 @@ export function ActiveAgentsPanel({
   queryScope = "dashboard",
   showMoreLink = true,
   showTranscripts = false,
+  groupByAgent = false,
 }: ActiveAgentsPanelProps) {
-  const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit }] as const;
+  const effectiveMinRunCount = groupByAgent ? Math.max(minRunCount, GROUPED_MIN_RUNS) : minRunCount;
+  const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount: effectiveMinRunCount, fetchLimit }] as const;
   const sharedLiveRuns = useSharedPollingQuery({
     companyId,
-    resourceKey: `live-runs:${queryScope}:${minRunCount}:${fetchLimit ?? "default"}`,
+    resourceKey: `live-runs:${queryScope}:${effectiveMinRunCount}:${fetchLimit ?? "default"}`,
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
     leaderOnly: true,
   });
   const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
     queryKey: liveRunsQueryKey,
-    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: minRunCount, limit: fetchLimit }),
+    queryFn: () => heartbeatsApi.liveRunsForCompany(companyId, { minCount: effectiveMinRunCount, limit: fetchLimit }),
     enabled: sharedLiveRuns.enabled,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
-  const runs = liveRuns ?? [];
+  const runs = useMemo(
+    () => (groupByAgent ? latestRunPerAgent(liveRuns ?? EMPTY_RUNS) : liveRuns ?? EMPTY_RUNS),
+    [groupByAgent, liveRuns],
+  );
   const visibleRuns = useMemo(() => runs.slice(0, cardLimit), [cardLimit, runs]);
   const hiddenRunCount = Math.max(0, runs.length - visibleRuns.length);
   const visibleIssueIds = useMemo(
@@ -139,7 +163,9 @@ export function ActiveAgentsPanel({
         <div className="mt-3 flex justify-end text-xs text-muted-foreground">
           <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
             {hiddenRunCount > 0
-              ? `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`
+              ? groupByAgent
+                ? `${hiddenRunCount} more agent${hiddenRunCount === 1 ? "" : "s"}`
+                : `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`
               : "View all runs"}
           </Link>
         </div>
