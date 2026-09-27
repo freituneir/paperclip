@@ -13,6 +13,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
+  makeClaudePermissionInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
@@ -133,6 +134,51 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Requested confirmation");
     expect(container.textContent).not.toContain("waiting for response");
     expect(container.textContent).not.toContain("Approve the plan?");
+  });
+
+  it("routes a Claude Code permission request to the permission card", () => {
+    const pending = makeClaudePermissionInteraction({ alwaysAvailable: true });
+    const onReviewRequest = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(pending)} onReviewRequest={onReviewRequest} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    expect(container.querySelector('[data-testid="task-chat-claude-permission"]')).not.toBeNull();
+    expect(container.textContent).toContain("Claude Code wants to use Bash");
+    const review = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Review request");
+    flushSync(() => review?.click());
+    expect(onReviewRequest).toHaveBeenCalledWith(pending.id);
+
+    const accept = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(pending)} presentation="takeover" onAcceptInteraction={accept} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    expect(container.querySelector('[data-testid="claude-permission-card"]')).not.toBeNull();
+    const always = Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "Always allow");
+    flushSync(() => always?.click());
+    expect(accept).toHaveBeenCalledWith(pending, undefined, undefined, true);
+
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard item={interactionItem(makeClaudePermissionInteraction({}, { status: "rejected" }))} />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+    expect(container.textContent).toContain("Denied");
   });
 
   it("renders a plan confirmation as a linked document preview", () => {

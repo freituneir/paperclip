@@ -6,6 +6,10 @@ import { AppLogo } from "@/pages/apps/AppLogo";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { shouldHideInteractionCard } from "@/lib/issue-thread-interactions";
+import {
+  claudePermissionToolLabel,
+  readClaudePermissionPayload,
+} from "@/components/claude/ClaudePermissionCard";
 import { TaskChatCompactInteractionCard } from "./TaskChatCompactInteractionCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
 import type { TaskChatInteractionItem } from "./task-chat-model";
@@ -42,6 +46,29 @@ export function TaskChatInteractionCard({
   ...cardProps
 }: TaskChatInteractionCardProps) {
   const interaction = item.interaction;
+  const claudePermission = readClaudePermissionPayload(interaction);
+  if (claudePermission) {
+    // Claude Code `ask` rule (permission bridge). The full approval card lives
+    // in the composer takeover while pending; the timeline shows a one-line
+    // pointer back to it, then the read-only outcome once answered.
+    if (presentation === "takeover") {
+      return <IssueThreadInteractionCard interaction={interaction} {...cardProps} />;
+    }
+    return (
+      <div id={`interaction-${interaction.id}`} data-testid="task-chat-claude-permission" className="w-full space-y-2">
+        {interaction.status === "pending" ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <div className="min-w-0 flex-1">
+              Claude Code wants to use <span className="font-mono">{claudePermissionToolLabel(claudePermission)}</span>
+            </div>
+            <Button className="ml-auto" size="sm" variant="outline" disabled={!onReviewRequest} onClick={() => onReviewRequest?.(interaction.id)}>Review request</Button>
+          </div>
+        ) : (
+          <IssueThreadInteractionCard interaction={interaction} {...cardProps} />
+        )}
+      </div>
+    );
+  }
   if (interaction.kind === "request_confirmation" && interaction.payload.toolAction) {
     const action = interaction.payload.toolAction;
     if (presentation === "takeover") {

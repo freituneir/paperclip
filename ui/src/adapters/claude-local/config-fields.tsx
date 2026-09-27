@@ -106,6 +106,14 @@ function FieldHelp({ children }: { children: string }) {
   return <p className="mt-1 text-xs text-muted-foreground">{children}</p>;
 }
 
+const DEFAULT_PERMISSION_WAIT_SEC = 600;
+
+const permissionBridgeHelp =
+  "When Claude Code hits a permission rule that asks first, ask here in the task chat instead of auto-approving. ACP engine only.";
+
+const permissionWaitHelp =
+  "How long a run waits for an answer to an approval card. After that the request is denied and the card stays open; approving it lets the agent retry on its next run.";
+
 type ToolListCreateKey = "claudeAllowedTools" | "claudeDisallowedTools";
 
 /**
@@ -132,6 +140,17 @@ function ClaudeCodeFields({
   const permissionMode = isCreate
     ? values!.claudePermissionMode ?? ""
     : String(eff<unknown>("adapterConfig", "claudePermissionMode", config.claudePermissionMode) ?? "");
+
+  const permissionBridgeEnabled = isCreate
+    ? values!.claudePermissionBridge !== "off"
+    : eff<unknown>("adapterConfig", "permissionBridge", config.permissionBridge) !== "off";
+  const storedWaitSec = isCreate
+    ? values!.claudePermissionWaitSec
+    : eff<unknown>("adapterConfig", "permissionWaitSec", config.permissionWaitSec);
+  const permissionWaitSec =
+    typeof storedWaitSec === "number" && Number.isFinite(storedWaitSec) && storedWaitSec > 0
+      ? storedWaitSec
+      : DEFAULT_PERMISSION_WAIT_SEC;
 
   const toolListField = (label: string, createKey: ToolListCreateKey, configKey: string, placeholder: string) => (
     <Field label={label} hint="Comma-separated Claude Code tool rules.">
@@ -207,6 +226,46 @@ function ClaudeCodeFields({
             </option>
           ))}
         </select>
+      </Field>
+      <div>
+        <ToggleField
+          label="Approval cards for ask rules"
+          toggleTestId="claude-permission-bridge-toggle"
+          checked={permissionBridgeEnabled}
+          onChange={(v) =>
+            isCreate
+              ? set!({ claudePermissionBridge: v ? "task_chat" : "off" })
+              : mark("adapterConfig", "permissionBridge", v ? undefined : "off")
+          }
+        />
+        <FieldHelp>{permissionBridgeHelp}</FieldHelp>
+      </div>
+      <Field label="Wait for an answer (seconds)" hint={permissionWaitHelp}>
+        {isCreate ? (
+          <input
+            type="number"
+            min={1}
+            className={inputClass}
+            value={permissionWaitSec}
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              set!({ claudePermissionWaitSec: Number.isFinite(next) && next > 0 ? next : undefined });
+            }}
+          />
+        ) : (
+          <DraftNumberInput
+            value={permissionWaitSec}
+            onCommit={(v) =>
+              mark(
+                "adapterConfig",
+                "permissionWaitSec",
+                v > 0 && v !== DEFAULT_PERMISSION_WAIT_SEC ? Math.floor(v) : undefined,
+              )
+            }
+            immediate
+            className={inputClass}
+          />
+        )}
       </Field>
       <Field label="Fallback model" hint="Model Claude Code switches to when the primary model is overloaded.">
         <DraftInput

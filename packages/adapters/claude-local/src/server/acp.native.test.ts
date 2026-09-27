@@ -1,11 +1,18 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import type { ClaudeLaunchManifest } from "@paperclipai/shared";
 import { buildInvocationEnvForLogs, redactEnvForLogs } from "@paperclipai/adapter-utils/server-utils";
-import { acpRootBypassUnavailable, buildClaudeAcpConfig, createClaudeAcpExecutor, PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV } from "./acp.js";
+import {
+  ACP_PERMISSION_BRIDGE_ROOT_WARNING,
+  acpRootBypassUnavailable,
+  buildClaudeAcpConfig,
+  createClaudeAcpExecutor,
+  PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV,
+  resolveClaudeAcpPermissionBridge,
+} from "./acp.js";
 import { parseClaudeNativeOptions } from "./native-options.js";
 
 const ENV_KEYS = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_CLAUDE_HOME_ROOT", "CLAUDE_CONFIG_DIR"] as const;
@@ -95,7 +102,7 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
 
   it("does not forward extraArgs for isolated agents (ACP ignored them before Claude Home)", () => {
     const built = buildClaudeAcpConfig(
-      { claudeHome: "isolated", extraArgs: ["--foo", "1"] },
+      { claudeHome: "isolated", extraArgs: ["--foo", "1"], permissionBridge: "off" },
       {},
       { companyId: "c1" },
     );
@@ -111,7 +118,11 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
   });
 
   it("leaves isolated agents untouched", () => {
-    const built = buildClaudeAcpConfig({ claudeHome: "isolated" }, {}, { companyId: "c1", hasPaperclipMcp: true });
+    const built = buildClaudeAcpConfig(
+      { claudeHome: "isolated", permissionBridge: "off" },
+      {},
+      { companyId: "c1", hasPaperclipMcp: true },
+    );
     const env = envOf(built);
     expect(env).not.toHaveProperty("CLAUDE_CONFIG_DIR");
     expect(env).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
@@ -136,7 +147,7 @@ describe("buildClaudeAcpConfig Claude Home + SDK options", () => {
 
   it("respects an operator CLAUDE_CONFIG_DIR unless the agent uses a managed AI connection", () => {
     const operator = buildClaudeAcpConfig(
-      { env: { CLAUDE_CONFIG_DIR: "/operator/claude" } },
+      { env: { CLAUDE_CONFIG_DIR: "/operator/claude" }, permissionBridge: "off" },
       {},
       { companyId: "c1" },
     );
@@ -256,7 +267,7 @@ describe("createClaudeAcpExecutor Claude Home parity", () => {
     expect(manifest).toMatchObject({
       version: 1,
       engine: "acp",
-      permission: { source: "acp_default" },
+      permission: { source: "permission_bridge" },
       claudeHome: { mode: "company", dir: home },
       settingSources: ["user", "project", "local"],
       instructions: { delivery: "user_prompt_prefix" },
@@ -325,7 +336,7 @@ describe("createClaudeAcpExecutor Claude Home parity", () => {
     const root = await makeTempRoot("paperclip-claude-acp-native-isolated-");
     const meta: AdapterInvocationMeta[] = [];
     const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
-    await execute(buildContext(root, { claudeHome: "isolated" }, {
+    await execute(buildContext(root, { claudeHome: "isolated", permissionBridge: "off" }, {
       onMeta: async (payload) => { meta.push(payload); },
     }));
     await expect(fs.stat(homeDirFor("company-1"))).rejects.toThrow();
@@ -411,5 +422,117 @@ describe("acpRootBypassUnavailable", () => {
     expect(acpRootBypassUnavailable(bypass, 0, { IS_SANDBOX: "1" })).toBe(false);
     expect(acpRootBypassUnavailable(bypass, 1000, {})).toBe(false);
     expect(acpRootBypassUnavailable(parseClaudeNativeOptions({ claudePermissionMode: "acceptEdits" }), 0, {})).toBe(false);
+  });
+});
+
+describe("Claude ACP permission bridge", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function sdkOf(config: Record<string, unknown>): Record<string, unknown> {
+    const raw = envOf(config)[PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV];
+    return raw ? (JSON.parse(String(raw)) as Record<string, unknown>) : {};
+  }
+
+  it("defaults to task_chat and fills bypassPermissions into the SDK settings overlay", () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const built = buildClaudeAcpConfig({}, {}, { companyId: "c1" });
+    expect(built.permissionBridge).toBe("task_chat");
+    expect(built.permissionWaitSec).toBe(600);
+    expect(sdkOf(built).settings).toEqual({ permissions: { defaultMode: "bypassPermissions" } });
+  });
+
+  it("merges the bypass default with an overlay that defines ask rules", () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const built = buildClaudeAcpConfig(
+      { claudeHome: "isolated", settingsOverlay: { model: "opus", permissions: { ask: ["Bash(git push:*)"] } }, permissionWaitSec: 5 },
+      {},
+      { companyId: "c1" },
+    );
+    expect(sdkOf(built).settings).toEqual({
+      model: "opus",
+      permissions: { ask: ["Bash(git push:*)"], defaultMode: "bypassPermissions" },
+    });
+    expect(built.permissionWaitSec).toBe(10);
+  });
+
+  it("respects an explicit claudePermissionMode or overlay defaultMode", () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const explicit = buildClaudeAcpConfig({ claudePermissionMode: "acceptEdits" }, {}, { companyId: "c1" });
+    expect(explicit.permissionBridge).toBe("task_chat");
+    expect(sdkOf(explicit).settings).toEqual({ permissions: { defaultMode: "acceptEdits" } });
+    const overlay = buildClaudeAcpConfig(
+      { settingsOverlay: { permissions: { defaultMode: "plan" } } },
+      {},
+      { companyId: "c1" },
+    );
+    expect(sdkOf(overlay).settings).toEqual({ permissions: { defaultMode: "plan" } });
+  });
+
+  it("leaves the overlay alone when the bridge is off, remote, or without a company", () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const off = buildClaudeAcpConfig({ permissionBridge: "off" }, {}, { companyId: "c1" });
+    expect(off.permissionBridge).toBe("off");
+    expect(sdkOf(off).settings).toBeUndefined();
+    const remote = buildClaudeAcpConfig({}, {}, { companyId: "c1", remote: true });
+    expect(remote.permissionBridge).toBe("off");
+    expect(envOf(remote)).not.toHaveProperty(PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV);
+    expect(buildClaudeAcpConfig({}, {}).permissionBridge).toBe("off");
+  });
+
+  it("is unavailable as root outside a sandbox when it would need bypassPermissions", () => {
+    expect(resolveClaudeAcpPermissionBridge({}, { companyId: "c1" }, 0, {})).toEqual({
+      state: "unavailable",
+      fillBypassDefaultMode: false,
+    });
+    expect(resolveClaudeAcpPermissionBridge({}, { companyId: "c1" }, 0, { IS_SANDBOX: "1" })).toEqual({
+      state: "task_chat",
+      fillBypassDefaultMode: true,
+    });
+    expect(
+      resolveClaudeAcpPermissionBridge({ claudePermissionMode: "acceptEdits" }, { companyId: "c1" }, 0, {}),
+    ).toEqual({ state: "task_chat", fillBypassDefaultMode: false });
+    expect(
+      resolveClaudeAcpPermissionBridge({ claudePermissionMode: "bypassPermissions" }, { companyId: "c1" }, 0, {}).state,
+    ).toBe("unavailable");
+  });
+
+  it("disables the bridge for the engine as root and says so in the manifest", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(0);
+    const previousSandbox = process.env.IS_SANDBOX;
+    delete process.env.IS_SANDBOX;
+    try {
+      const built = buildClaudeAcpConfig({}, {}, { companyId: "c1" });
+      expect(built.permissionBridge).toBe("off");
+      expect(sdkOf(built).settings).toBeUndefined();
+
+      const root = await makeTempRoot("paperclip-claude-acp-bridge-root-");
+      const meta: AdapterInvocationMeta[] = [];
+      const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+      await execute(buildContext(root, {}, { onMeta: async (payload) => { meta.push(payload); } }));
+      const manifest = meta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+      expect(manifest.permission.bridge).toBe("unavailable");
+      expect(manifest.warnings).toContain(ACP_PERMISSION_BRIDGE_ROOT_WARNING);
+    } finally {
+      if (previousSandbox !== undefined) process.env.IS_SANDBOX = previousSandbox;
+    }
+  });
+
+  it("reports task_chat in the ACP manifest and the bypass overlay key", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const root = await makeTempRoot("paperclip-claude-acp-bridge-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+    await execute(buildContext(root, {}, { onMeta: async (payload) => { meta.push(payload); } }));
+    expect(meta[0]?.launchManifest).toMatchObject({
+      // The manifest must say what Claude actually runs with, not the ACP client default.
+      permission: { mode: "bypassPermissions", source: "permission_bridge", bridge: "task_chat" },
+      settingsOverlayKeys: ["permissions"],
+    });
+
+    const offMeta: AdapterInvocationMeta[] = [];
+    await execute(buildContext(root, { permissionBridge: "off" }, { onMeta: async (payload) => { offMeta.push(payload); } }));
+    expect(offMeta[0]?.launchManifest).toMatchObject({ permission: { bridge: "off" }, settingsOverlayKeys: [] });
   });
 });

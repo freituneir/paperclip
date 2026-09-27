@@ -21,6 +21,7 @@ import {
   expiredToolActionInteraction,
   failedRequestConfirmationInteraction,
   failedToolActionInteraction,
+  makeClaudePermissionInteraction,
   pendingRequestConfirmationInteraction,
   pendingToolActionDestructiveInteraction,
   pendingToolActionWriteInteraction,
@@ -1191,6 +1192,42 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(occurrences).toBe(1);
   });
 
+});
+
+describe("IssueThreadInteractionCard Claude Code permission card", () => {
+  it("renders payload.claudePermission as the permission card, not the generic confirmation", () => {
+    const host = renderCard({
+      interaction: makeClaudePermissionInteraction(),
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+    expect(host.querySelector('[data-testid="claude-permission-card"]')).not.toBeNull();
+    expect(host.textContent).toContain("Claude Code wants to use Bash");
+    expect(host.textContent).toContain("git push origin main");
+    expect(host.textContent).not.toContain("Confirmation requested");
+    expect(host.textContent).not.toContain("Always allow");
+  });
+
+  it("accepts with rememberAction true for Always allow and false for Allow once", async () => {
+    const accept = vi.fn();
+    const interaction = makeClaudePermissionInteraction({ alwaysAvailable: true });
+    const host = renderCard({ interaction, onAcceptInteraction: accept, onRejectInteraction: vi.fn() });
+    const always = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Always allow");
+    await act(async () => { always?.click(); });
+    expect(accept).toHaveBeenLastCalledWith(interaction, undefined, undefined, true);
+    const once = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Allow once");
+    await act(async () => { once?.click(); });
+    expect(accept).toHaveBeenLastCalledWith(interaction, undefined, undefined, false);
+  });
+
+  it("rejects through the existing reject handler", async () => {
+    const reject = vi.fn();
+    const interaction = makeClaudePermissionInteraction();
+    const host = renderCard({ interaction, onAcceptInteraction: vi.fn(), onRejectInteraction: reject });
+    const deny = Array.from(host.querySelectorAll("button")).find((b) => b.textContent === "Deny");
+    await act(async () => { deny?.click(); });
+    expect(reject).toHaveBeenCalledExactlyOnceWith(interaction);
+  });
 });
 
 describe("IssueThreadInteractionCard secret-proposal card", () => {

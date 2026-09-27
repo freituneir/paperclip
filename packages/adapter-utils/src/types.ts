@@ -727,6 +727,10 @@ export interface CreateConfigValues {
   /** claude_local `claudePermissionMode`; "" keeps the Paperclip default. */
   claudePermissionMode?: string;
   claudeFallbackModel?: string;
+  /** claude_local `permissionBridge`; omitted means the "task_chat" default. */
+  claudePermissionBridge?: "task_chat" | "off";
+  /** claude_local `permissionWaitSec`; omitted means the 600 default. */
+  claudePermissionWaitSec?: number;
   /** Comma-separated tool names, stored as `allowedTools: string[]`. */
   claudeAllowedTools?: string;
   /** Comma-separated tool names, stored as `disallowedTools: string[]`. */

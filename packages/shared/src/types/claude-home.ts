@@ -8,6 +8,9 @@ export type ClaudeHomeMode = "company" | "isolated";
 export type ClaudeNativeMcpMode = "enabled" | "disabled";
 export const CLAUDE_PERMISSION_MODES = ["bypassPermissions", "auto", "acceptEdits", "dontAsk", "plan", "manual"] as const;
 export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
+export const CLAUDE_PERMISSION_BRIDGE_MODES = ["task_chat", "off"] as const;
+export type ClaudePermissionBridgeMode = (typeof CLAUDE_PERMISSION_BRIDGE_MODES)[number];
+export type ClaudePermissionBridgeState = ClaudePermissionBridgeMode | "unavailable";
 export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export const CLAUDE_REDACTED_VALUE = "__redacted__";
 
@@ -61,7 +64,14 @@ export interface ClaudeLaunchManifest {
   effort: string | null;
   permission: {
     mode: string;
-    source: "claudePermissionMode" | "dangerouslySkipPermissions" | "acp_default" | "remote_allowlist";
+    source: "claudePermissionMode" | "dangerouslySkipPermissions" | "acp_default" | "remote_allowlist" | "permission_bridge";
+    /**
+     * Whether Claude Code `ask` rules become Paperclip approval cards.
+     * "task_chat": bridged (ACP, local). "off": disabled by config, or the
+     * engine/target cannot bridge (CLI engine, remote ACP). "unavailable": the
+     * bridge needs bypassPermissions, which root outside a sandbox cannot use.
+     */
+    bridge?: ClaudePermissionBridgeState;
   };
   claudeHome: { mode: ClaudeHomeMode; dir: string | null };
   settingSources: string[];

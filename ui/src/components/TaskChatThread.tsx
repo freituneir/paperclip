@@ -64,6 +64,7 @@ import {
   runtimeRequestReplacesComposerSkip,
 } from "@/components/task-chat/task-chat-model";
 import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
+import { readClaudePermissionPayload } from "@/components/claude/ClaudePermissionCard";
 import { TaskChatProtocolCard } from "@/components/task-chat/TaskChatProtocolCard";
 import {
   interactionThreadAnchorMs,
@@ -438,6 +439,8 @@ function durableInputLabel(
   }
   if (interaction.payload.toolAction)
     return interaction.title ?? "Approve tool action";
+  if (readClaudePermissionPayload(interaction))
+    return interaction.title ?? "Claude Code permission";
   if (interaction.payload.secretProposal)
     return interaction.title ?? "Review secret proposal";
   return interaction.title ?? "Confirmation";

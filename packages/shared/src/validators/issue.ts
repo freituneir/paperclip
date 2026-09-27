@@ -1494,6 +1494,42 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationClaudePermissionOutcomeSchema = z.enum([
+  "allow_once",
+  "allow_always",
+  "reject_once",
+  "reject_always",
+  "cancel",
+]);
+
+/** A Claude Code `ask`-rule permission request surfaced as an approval card. */
+export const requestConfirmationClaudePermissionPayloadSchema = z.object({
+  version: z.literal(1),
+  fingerprint: z.string().trim().min(1).max(255),
+  toolCallId: z.string().max(500).nullable(),
+  toolName: z.string().max(500).nullable(),
+  title: z.string().max(1000).nullable(),
+  kind: z.string().max(120).nullable(),
+  inputPreview: z.string().max(4000),
+  options: z
+    .array(
+      z.object({
+        optionId: z.string().max(500),
+        name: z.string().max(500),
+        kind: z.string().max(120),
+      }),
+    )
+    .max(20),
+  alwaysAvailable: z.boolean(),
+  runId: z.string().trim().min(1).max(255),
+  agentId: z.string().trim().min(1).max(255),
+  parkedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  outcome: requestConfirmationClaudePermissionOutcomeSchema.nullable().optional(),
+  decidedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  consumedAt: z.string().datetime({ offset: true }).nullable().optional(),
+  consumedByRunId: z.string().max(255).nullable().optional(),
+});
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -1514,6 +1550,7 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
+  claudePermission: requestConfirmationClaudePermissionPayloadSchema.optional(),
 });
 
 export const requestCheckboxConfirmationOptionSchema = z.object({

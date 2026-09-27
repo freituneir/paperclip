@@ -44,6 +44,11 @@ import { ProposalJustification } from "../pages/secrets/proposal-review";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
+import {
+  ClaudePermissionCard,
+  readClaudePermissionPayload,
+  type ClaudePermissionPayload,
+} from "./claude/ClaudePermissionCard";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
 
@@ -1761,6 +1766,38 @@ function RequestToolActionCard({
       ) : null}
       <InteractionActionError message={actionError} />
     </div>
+  );
+}
+
+/**
+ * A `request_confirmation` carrying `payload.claudePermission` is a Claude Code
+ * `ask` rule forwarded by the permission bridge. It reuses the card's
+ * accept/reject handlers: accept with `rememberAction` = "Always allow".
+ */
+function RequestClaudePermissionCard({
+  interaction,
+  permission,
+  onAcceptInteraction,
+  onRejectInteraction,
+}: {
+  interaction: RequestConfirmationInteraction;
+  permission: ClaudePermissionPayload;
+  onAcceptInteraction?: IssueThreadInteractionCardProps["onAcceptInteraction"];
+  onRejectInteraction?: (interaction: RequestConfirmationInteraction, reason?: string) => Promise<void> | void;
+}) {
+  const resolutionErrorMessage = useResolutionErrorMessage();
+  return (
+    <ClaudePermissionCard
+      interaction={interaction}
+      permission={permission}
+      onAllow={
+        onAcceptInteraction
+          ? (rememberAction) => onAcceptInteraction(interaction, undefined, undefined, rememberAction)
+          : undefined
+      }
+      onDeny={onRejectInteraction ? () => onRejectInteraction(interaction) : undefined}
+      resolveErrorMessage={resolutionErrorMessage}
+    />
   );
 }
 
@@ -3676,6 +3713,19 @@ export function IssueThreadInteractionCard({
     creatorLabel: createdByLabel,
     addresseeLabel,
   });
+  const claudePermission = readClaudePermissionPayload(interaction);
+  if (claudePermission && interaction.kind === "request_confirmation") {
+    return (
+      <InteractionAudienceContext.Provider value={audience}>
+        <RequestClaudePermissionCard
+          interaction={interaction}
+          permission={claudePermission}
+          onAcceptInteraction={onAcceptInteraction}
+          onRejectInteraction={onRejectInteraction}
+        />
+      </InteractionAudienceContext.Provider>
+    );
+  }
   if (isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
     return (
       <InteractionAudienceContext.Provider value={audience}>

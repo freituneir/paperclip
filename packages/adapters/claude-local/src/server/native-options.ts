@@ -1,6 +1,7 @@
 import { asString, parseObject } from "@paperclipai/adapter-utils/server-utils";
 import {
   CLAUDE_PERMISSION_MODES,
+  type ClaudePermissionBridgeMode,
   type ClaudeHomeMode,
   type ClaudeNativeMcpMode,
   type ClaudePermissionMode,
@@ -18,6 +19,26 @@ export interface ClaudeNativeOptions {
   allowedTools: string[];
   disallowedTools: string[];
   settingsOverlay: Record<string, unknown> | null;
+  /** Route Claude Code `ask` rules to Paperclip approval cards (ACP engine only). */
+  permissionBridge: ClaudePermissionBridgeMode;
+  /** How long one approval card may hold the tool call, in seconds. */
+  permissionWaitSec: number;
+}
+
+export const DEFAULT_CLAUDE_PERMISSION_WAIT_SEC = 600;
+export const MIN_CLAUDE_PERMISSION_WAIT_SEC = 10;
+export const MAX_CLAUDE_PERMISSION_WAIT_SEC = 86_400;
+
+/** Integer seconds, default 600, clamped to 10..86400. */
+export function parseClaudePermissionWaitSec(value: unknown): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim().length > 0
+        ? Number(value)
+        : Number.NaN;
+  if (!Number.isFinite(parsed)) return DEFAULT_CLAUDE_PERMISSION_WAIT_SEC;
+  return Math.min(MAX_CLAUDE_PERMISSION_WAIT_SEC, Math.max(MIN_CLAUDE_PERMISSION_WAIT_SEC, Math.trunc(parsed)));
 }
 
 export const CLAUDE_HOME_SETTING_SOURCES = ["user", "project", "local"] as const;
@@ -48,6 +69,8 @@ export function parseClaudeNativeOptions(config: Record<string, unknown>): Claud
     allowedTools: parseToolList(config.allowedTools),
     disallowedTools: parseToolList(config.disallowedTools),
     settingsOverlay: Object.keys(overlay).length > 0 ? overlay : null,
+    permissionBridge: config.permissionBridge === "off" ? "off" : "task_chat",
+    permissionWaitSec: parseClaudePermissionWaitSec(config.permissionWaitSec),
   };
 }
 
@@ -145,4 +168,15 @@ export function buildClaudeSdkOptions(
   const extraArgs = extraArgsToSdkRecord(input.extraArgs);
   if (Object.keys(extraArgs).length > 0) options.extraArgs = extraArgs;
   return options;
+}
+
+export const CLI_ASK_RULES_DENIED_WARNING =
+  "Claude `ask` rules are denied on the CLI engine; use the ACP engine for approval cards.";
+
+/** True when any given settings object has a non-empty `permissions.ask` list. */
+export function hasClaudeAskRules(...settings: Array<Record<string, unknown> | null | undefined>): boolean {
+  return settings.some((entry) => {
+    const ask = parseObject(parseObject(entry).permissions).ask;
+    return Array.isArray(ask) && ask.some((rule) => typeof rule === "string" && rule.trim().length > 0);
+  });
 }

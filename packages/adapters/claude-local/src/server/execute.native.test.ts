@@ -97,7 +97,7 @@ describe("claude_local CLI native options on local targets", () => {
     expect(args).not.toContain("--dangerously-skip-permissions");
     expect(args).toContain("--allowedTools");
     expect(args).not.toContain("--settings");
-    expect(manifest.permission).toEqual({ mode: "allowlist", source: "dangerouslySkipPermissions" });
+    expect(manifest.permission).toEqual({ mode: "allowlist", source: "dangerouslySkipPermissions", bridge: "off" });
     expect(manifest.warnings).toContain(
       'claudePermissionMode "bypassPermissions" cannot be used when Paperclip runs as root (Claude Code refuses to start); using the curated --allowedTools list instead.',
     );
@@ -108,7 +108,7 @@ describe("claude_local CLI native options on local targets", () => {
     const { args, manifest } = await runLocal({ claudePermissionMode: "acceptEdits" });
     expect(args).toEqual(expect.arrayContaining(["--permission-mode", "acceptEdits"]));
     expect(args).not.toContain("--allowedTools");
-    expect(manifest.permission).toEqual({ mode: "acceptEdits", source: "claudePermissionMode" });
+    expect(manifest.permission).toEqual({ mode: "acceptEdits", source: "claudePermissionMode", bridge: "off" });
   });
 
   it("keeps bypassPermissions for non-root users", async () => {
@@ -123,5 +123,29 @@ describe("claude_local CLI native options on local targets", () => {
     expect(result.exitCode).toBe(0);
     expect(logs).toContain(warning);
     expect(manifest.warnings).toContain(warning);
+  });
+});
+
+describe("claude_local CLI permission bridge", () => {
+  const ASK_WARNING = "Claude `ask` rules are denied on the CLI engine; use the ACP engine for approval cards.";
+
+  it("reports the bridge off without a warning when no ask rules exist", async () => {
+    const { manifest } = await runLocal({});
+    expect(manifest.permission.bridge).toBe("off");
+    expect(manifest.warnings).not.toContain(ASK_WARNING);
+  });
+
+  it("warns that ask rules are denied when the overlay defines them", async () => {
+    const { manifest } = await runLocal({ settingsOverlay: { permissions: { ask: ["Bash(git push:*)"] } } });
+    expect(manifest.permission.bridge).toBe("off");
+    expect(manifest.warnings).toContain(ASK_WARNING);
+  });
+
+  it("does not warn when the bridge is off", async () => {
+    const { manifest } = await runLocal({
+      permissionBridge: "off",
+      settingsOverlay: { permissions: { ask: ["Bash(git push:*)"] } },
+    });
+    expect(manifest.warnings).not.toContain(ASK_WARNING);
   });
 });

@@ -472,6 +472,39 @@ export const commentExpiredAskUserQuestionsInteraction = createAskUserQuestionsI
 
 export const pendingRequestConfirmationInteraction = createRequestConfirmationInteraction({});
 
+/** A Claude Code `ask`-rule approval (payload.claudePermission, permission bridge). */
+export function makeClaudePermissionInteraction(
+  permission: Record<string, unknown> = {},
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  return createRequestConfirmationInteraction({
+    id: "interaction-claude-permission",
+    title: null,
+    summary: null,
+    payload: {
+      version: 1,
+      prompt: "Claude Code wants to use Bash",
+      claudePermission: {
+        fingerprint: "fp-1",
+        toolName: "Bash",
+        title: "git push origin main",
+        kind: "execute",
+        inputPreview: "git push origin main\n--force-with-lease",
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+        alwaysAvailable: false,
+        runId: "run-1",
+        agentId: "agent-1",
+        ...permission,
+      },
+    } as RequestConfirmationInteraction["payload"],
+    result: null,
+    ...overrides,
+  });
+}
+
 export const genericPendingRequestConfirmationInteraction = createRequestConfirmationInteraction({
   id: "interaction-confirmation-generic-pending",
   title: "Confirm next step",

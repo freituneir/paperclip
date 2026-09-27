@@ -24,6 +24,7 @@ import type {
   SitePlan,
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
+import type { AcpxPermissionSink } from "./permission-bridge.js";
 
 /** The agent child's identity, as the runtime reports it on each spawn. */
 export type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
@@ -56,6 +57,8 @@ export interface RuntimeCacheEntry {
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;
   processIdentitySink: AcpxProcessIdentitySink;
+  /** The permission target the runtime's `onPermissionRequest` hook reads. */
+  permissionSink?: AcpxPermissionSink;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;

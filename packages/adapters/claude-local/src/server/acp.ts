@@ -10,7 +10,7 @@ import type {
   AdapterExecutionResult,
   AdapterInvocationMeta,
 } from "@paperclipai/adapter-utils";
-import type { ClaudeLaunchManifest } from "@paperclipai/shared";
+import type { ClaudeLaunchManifest, ClaudePermissionBridgeState } from "@paperclipai/shared";
 import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
@@ -179,6 +179,60 @@ export function acpRootBypassUnavailable(
 export const ACP_ROOT_BYPASS_WARNING =
   "bypassPermissions is unavailable to the ACP engine when Paperclip runs as root outside a sandbox; the ACP default permission mode was used.";
 
+export const ACP_PERMISSION_BRIDGE_ROOT_WARNING =
+  "Claude `ask` rules cannot become approval cards when Paperclip runs as root outside a sandbox (bypassPermissions is unavailable); the ACP permission mode decides them.";
+
+/** The overlay's own `permissions.defaultMode`, when the operator set one. */
+function overlayDefaultMode(native: ClaudeNativeOptions): string | null {
+  const mode = parseObject(parseObject(native.settingsOverlay).permissions).defaultMode;
+  return typeof mode === "string" && mode.trim().length > 0 ? mode.trim() : null;
+}
+
+export interface ClaudeAcpPermissionBridge {
+  state: ClaudePermissionBridgeState;
+  /** Fill `permissions.defaultMode = "bypassPermissions"` into the SDK settings overlay. */
+  fillBypassDefaultMode: boolean;
+}
+
+/**
+ * Whether Claude `ask` rules reach Paperclip approval cards on this ACP run.
+ * The bridge needs a local run with native options applied (a company id). With
+ * no explicit Claude mode (claudePermissionMode or an overlay
+ * `permissions.defaultMode`) the SDK overlay fills bypassPermissions so only
+ * `ask` rules raise requests; an explicit mode is respected. Bypass is
+ * unavailable to root outside a sandbox, which disables the bridge.
+ */
+export function resolveClaudeAcpPermissionBridge(
+  config: Record<string, unknown>,
+  options: ClaudeAcpConfigOptions,
+  uid: number | null = process.getuid?.() ?? null,
+  env: NodeJS.ProcessEnv = process.env,
+): ClaudeAcpPermissionBridge {
+  const native = parseClaudeNativeOptions(config);
+  if (native.permissionBridge === "off" || options.remote || !options.companyId) {
+    return { state: "off", fillBypassDefaultMode: false };
+  }
+  const explicitMode = native.permissionMode ?? overlayDefaultMode(native);
+  const effectiveMode = explicitMode ?? "bypassPermissions";
+  if (effectiveMode === "bypassPermissions" && uid === 0 && !env.IS_SANDBOX) {
+    return { state: "unavailable", fillBypassDefaultMode: false };
+  }
+  return { state: "task_chat", fillBypassDefaultMode: explicitMode === null };
+}
+
+/** Native options with the bridge's bypass default filled into the overlay. */
+function withBridgeDefaultMode(native: ClaudeNativeOptions, bridge: ClaudeAcpPermissionBridge): ClaudeNativeOptions {
+  if (!bridge.fillBypassDefaultMode) return native;
+  const overlay = parseObject(native.settingsOverlay);
+  return {
+    ...native,
+    settingsOverlay: {
+      ...overlay,
+      permissions: { ...parseObject(overlay.permissions), defaultMode: "bypassPermissions" },
+    },
+  };
+}
+
 /**
  * The env the patched `claude-agent-acp` reads to mirror the CLI lane's native
  * options: `CLAUDE_CONFIG_DIR` (company Claude Home) and
@@ -186,8 +240,9 @@ export const ACP_ROOT_BYPASS_WARNING =
  * targets only. Without an active Claude Home (isolated agents, or an
  * operator-set CLAUDE_CONFIG_DIR) only the non-home options (fallback model,
  * permission mode, settings overlay, tool lists) are forwarded, MCP stays
- * non-strict, and extraArgs stay ignored, as they always were on ACP. The JSON is omitted when empty, so an
- * unconfigured isolated agent keeps its legacy env byte-for-byte.
+ * non-strict, and extraArgs stay ignored, as they always were on ACP. With the
+ * permission bridge on (the default) the overlay also sets bypass mode so only
+ * `ask` rules raise requests; the JSON is omitted only when nothing is set.
  */
 function buildClaudeAcpNativeEnv(
   config: Record<string, unknown>,
@@ -196,9 +251,10 @@ function buildClaudeAcpNativeEnv(
 ): Record<string, string> {
   if (options.remote || !options.companyId) return {};
   const parsedNative = parseClaudeNativeOptions(config);
-  const native = acpRootBypassUnavailable(parsedNative)
-    ? { ...parsedNative, permissionMode: null }
-    : parsedNative;
+  const native = withBridgeDefaultMode(
+    acpRootBypassUnavailable(parsedNative) ? { ...parsedNative, permissionMode: null } : parsedNative,
+    resolveClaudeAcpPermissionBridge(config, options),
+  );
   const activation = resolveClaudeHomeActivation({
     native,
     targetIsRemote: false,
@@ -248,6 +304,8 @@ export function buildClaudeAcpConfig(
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
   const nativeEnv = buildClaudeAcpNativeEnv(config, env, options);
   const hasNativeEnv = Object.keys(nativeEnv).length > 0;
+  const bridge = resolveClaudeAcpPermissionBridge(config, options);
+  const native = parseClaudeNativeOptions(config);
 
   return {
     ...config,
@@ -261,6 +319,10 @@ export function buildClaudeAcpConfig(
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    // The acpx engine forwards permission requests to the host only when this
+    // is not "off" (and the host offers `requestPermission`).
+    permissionBridge: bridge.state === "task_chat" ? "task_chat" : "off",
+    permissionWaitSec: native.permissionWaitSec,
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };
@@ -497,6 +559,7 @@ async function buildClaudeAcpLaunchManifest(input: {
   homeRun: ClaudeHomeRunPreparation;
   paperclipMcp: { name: string; url: string }[];
   cwd: string | null;
+  companyId?: string;
 }): Promise<ClaudeLaunchManifest> {
   const { config, acpConfig, targetIsRemote, homeRun } = input;
   const native = parseClaudeNativeOptions(config);
@@ -535,9 +598,20 @@ async function buildClaudeAcpLaunchManifest(input: {
       disallowedTools: [],
     };
   }
+  const bridge = resolveClaudeAcpPermissionBridge(config, { remote: targetIsRemote, companyId: input.companyId });
+  if (bridge.state === "unavailable") warnings.push(ACP_PERMISSION_BRIDGE_ROOT_WARNING);
+  options = withBridgeDefaultMode(options, bridge);
   const permission: ClaudeLaunchManifest["permission"] = options.permissionMode
-    ? { mode: options.permissionMode, source: "claudePermissionMode" }
-    : { mode: asString(acpConfig.permissionMode, DEFAULT_ACP_ENGINE_PERMISSION_MODE), source: "acp_default" };
+    ? { mode: options.permissionMode, source: "claudePermissionMode", bridge: bridge.state }
+    : bridge.fillBypassDefaultMode
+    ? // The bridge put Claude in bypass mode via the settings overlay, so only
+      // `ask` rules raise requests; report that rather than the ACP client default.
+      { mode: "bypassPermissions", source: "permission_bridge", bridge: bridge.state }
+    : {
+        mode: asString(acpConfig.permissionMode, DEFAULT_ACP_ENGINE_PERMISSION_MODE),
+        source: "acp_default",
+        bridge: bridge.state,
+      };
   const settingSources = Array.isArray(sdkOptions.settingSources)
     ? sdkOptions.settingSources.filter((value): value is string => typeof value === "string")
     : ACP_DEFAULT_SETTING_SOURCES;
@@ -624,6 +698,7 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
                   homeRun,
                   paperclipMcp,
                   cwd: meta.cwd ?? null,
+                  companyId: ctx.agent.companyId,
                 });
               } catch {
                 // The manifest is descriptive only; never fail a run over it.

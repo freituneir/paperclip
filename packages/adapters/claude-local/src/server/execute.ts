@@ -98,6 +98,8 @@ import { claudeHomeFailureResult, prepareClaudeHomeRun } from "./claude-home-run
 import {
   buildClaudeCliNativeArgs,
   CLAUDE_HOME_SETTING_SOURCES,
+  CLI_ASK_RULES_DENIED_WARNING,
+  hasClaudeAskRules,
   parseClaudeNativeOptions,
   settingsOverlayWithPermission,
 } from "./native-options.js";
@@ -647,13 +649,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         targetIsRemote: executionTargetIsRemote,
         localProcessUid,
       });
-  const manifestPermission: ClaudeLaunchManifest["permission"] = localPermissionMode
-    ? { mode: localPermissionMode, source: "claudePermissionMode" }
-    : legacyPermissionArgs[0] === "--allowedTools"
-    ? { mode: "allowlist", source: executionTargetIsRemote ? "remote_allowlist" : "dangerouslySkipPermissions" }
-    : legacyPermissionArgs[0] === "--dangerously-skip-permissions"
-    ? { mode: "bypassPermissions", source: "dangerouslySkipPermissions" }
-    : { mode: "default", source: "dangerouslySkipPermissions" };
+  const manifestPermission: ClaudeLaunchManifest["permission"] = {
+    ...(localPermissionMode
+      ? { mode: localPermissionMode, source: "claudePermissionMode" as const }
+      : legacyPermissionArgs[0] === "--allowedTools"
+      ? { mode: "allowlist", source: executionTargetIsRemote ? "remote_allowlist" as const : "dangerouslySkipPermissions" as const }
+      : legacyPermissionArgs[0] === "--dangerously-skip-permissions"
+      ? { mode: "bypassPermissions", source: "dangerouslySkipPermissions" as const }
+      : { mode: "default", source: "dangerouslySkipPermissions" as const }),
+    // The CLI engine has no host permission channel.
+    bridge: "off",
+  };
+  // `ask` rules cannot reach a human under headless `-p`; Claude Code denies
+  // them. Say so only when the home settings or the overlay define ask rules.
+  if (native.permissionBridge !== "off" && hasClaudeAskRules(claudeHomeInventory?.settings, native.settingsOverlay)) {
+    manifestWarnings.push(CLI_ASK_RULES_DENIED_WARNING);
+  }
   // Legacy (isolated/remote): strict only when Paperclip MCP servers exist.
   // Claude Home: strict only when native MCP is disabled for the agent.
   const useStrictMcpConfig = claudeHomeActive

@@ -62,6 +62,23 @@ describe("LaunchManifestCard", () => {
     expect(html).not.toContain(UNGOVERNED_MCP_LEGEND);
   });
 
+  it("shows the permission bridge chip when the manifest reports it", () => {
+    const cases: Array<[string, string]> = [
+      ["task_chat", "Ask rules → approval cards"],
+      ["off", "Ask rules auto-denied"],
+      ["unavailable", "Approval cards unavailable"],
+    ];
+    for (const [bridge, label] of cases) {
+      const manifest = makeManifest({
+        permission: { mode: "bypassPermissions", source: "acp_default", bridge } as ClaudeLaunchManifest["permission"],
+      });
+      const html = renderToStaticMarkup(<LaunchManifestCard manifest={manifest} />);
+      expect(html).toContain(label);
+    }
+    const plain = renderToStaticMarkup(<LaunchManifestCard manifest={makeManifest()} />);
+    expect(plain).not.toContain("launch-manifest-permission-bridge");
+  });
+
   it("renders warnings", () => {
     const html = renderToStaticMarkup(
       <LaunchManifestCard manifest={makeManifest({ warnings: ["Native MCP server x has no target"] })} />,

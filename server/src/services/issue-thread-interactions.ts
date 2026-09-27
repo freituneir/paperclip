@@ -3199,6 +3199,7 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.kind, "request_confirmation"),
             eq(issueThreadInteractions.status, "pending"),
             isNotNull(issueThreadInteractions.createdByAgentId),
+            sql`(${issueThreadInteractions.payload}->'claudePermission') is null`,
           ),
         )
         .orderBy(
@@ -3552,6 +3553,9 @@ export function issueThreadInteractionService(
                 eq(issueThreadInteractions.createdByAgentId, actor.agentId),
                 eq(issueThreadInteractions.status, "pending"),
                 ne(issueThreadInteractions.id, row.id),
+                // Claude permission cards belong to the permission bridge
+                // (live waiters and one-time grants), not to the agent's drafts.
+                sql`(${issueThreadInteractions.payload}->'claudePermission') is null`,
               ),
             )
             .returning();

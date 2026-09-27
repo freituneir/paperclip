@@ -45,6 +45,26 @@ function Chip({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+type PermissionBridgeState = "task_chat" | "off" | "unavailable";
+
+/**
+ * `permission.bridge` is added to the shared manifest type by the engine; read
+ * it through a narrow guard so older manifests (and older type shapes) still
+ * render.
+ */
+export function readPermissionBridge(manifest: ClaudeLaunchManifest): PermissionBridgeState | null {
+  const permission = manifest.permission as unknown;
+  if (!permission || typeof permission !== "object") return null;
+  const bridge = (permission as { bridge?: unknown }).bridge;
+  return bridge === "task_chat" || bridge === "off" || bridge === "unavailable" ? bridge : null;
+}
+
+const PERMISSION_BRIDGE_LABELS: Record<PermissionBridgeState, string> = {
+  task_chat: "Ask rules → approval cards",
+  off: "Ask rules auto-denied",
+  unavailable: "Approval cards unavailable",
+};
+
 function NamedGroup({ title, items }: { title: string; items: ClaudeNamedItem[] }) {
   if (items.length === 0) return null;
   return (
@@ -108,6 +128,7 @@ export function LaunchManifestCard({
   const hasUngoverned = manifest.mcpServers.some((server) => !server.governed);
   const takeoverCommand = buildTakeoverCommand(manifest, sessionId);
   const homeLabel = manifest.claudeHome.mode === "company" ? "company" : "isolated";
+  const permissionBridge = readPermissionBridge(manifest);
 
   return (
     <div
@@ -128,6 +149,11 @@ export function LaunchManifestCard({
         {manifest.effort ? <Chip label="Effort">{manifest.effort}</Chip> : null}
         <Chip label="Permissions">{manifest.permission.mode}</Chip>
         <Chip label="Claude Home">{homeLabel}</Chip>
+        {permissionBridge ? (
+          <Badge variant="outline" className="font-normal" data-testid="launch-manifest-permission-bridge">
+            {PERMISSION_BRIDGE_LABELS[permissionBridge]}
+          </Badge>
+        ) : null}
       </div>
 
       {manifest.claudeHome.dir ? (

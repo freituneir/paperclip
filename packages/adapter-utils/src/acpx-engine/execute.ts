@@ -36,6 +36,11 @@ import {
   type ReferencedSourceIgnoreResolution,
   type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
+import {
+  acpxPermissionHookForSink,
+  createAcpxPermissionHandler,
+  createAcpxPermissionSink,
+} from "./permission-bridge.js";
 import { captureLocalProcess, capturedProcessExited, killCapturedLocalProcess } from "./local-process-control.js";
 import type { DuplexLossReason } from "../duplex-observability.js";
 import { DUPLEX_CHANNEL_LOST_ERROR_CODE } from "../bridge-transport-contract.js";
@@ -3918,6 +3923,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // `onLoss`; stays undefined everywhere else, so the cleanup call is a
     // no-op there.
     let removeLossListener: (() => void) | undefined;
+    // Clears this run's permission handler from the runtime's permission sink
+    // and aborts any host permission wait still open. Set once the runtime is
+    // chosen; the run root `finally` calls it so a warm runtime never reaches a
+    // finished run's `ctx.requestPermission`.
+    let releasePermissionSink: (() => void) | undefined;
     // Bounds the wait after a latched terminal duplex loss so a silent agent
     // cannot hold the run open on the cooperative `turn.cancel()` request
     // alone. `stepTurnStart` arms `lossDeadlineTimer` the moment a loss
@@ -4189,6 +4199,20 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // target mutable so a later agent respawn records identity on the current
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
+        // The runtime's permission hook is installed once, at creation, and
+        // reads this sink. Point it at this run's handler (or none, so the
+        // permission mode decides) and clear it when the run ends.
+        const permissionSink = cached?.permissionSink ?? createAcpxPermissionSink();
+        const permissionRunAbort = new AbortController();
+        const permissionHandler = createAcpxPermissionHandler({
+          ctx,
+          runSignal: permissionRunAbort.signal,
+        });
+        permissionSink.current = permissionHandler;
+        releasePermissionSink = () => {
+          permissionRunAbort.abort();
+          if (permissionSink.current === permissionHandler) permissionSink.current = null;
+        };
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
         const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
@@ -4247,6 +4271,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             });
           },
           getRuntimeParentContext,
+          onPermissionRequest: acpxPermissionHookForSink(permissionSink),
         };
         // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
         // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
@@ -5393,6 +5418,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       removeStopListener?.();
       removeLossListener?.();
       clearTimeout(lossDeadlineTimer);
+      releasePermissionSink?.();
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
       // Release the per-session staging lease as the run's final act, AFTER the

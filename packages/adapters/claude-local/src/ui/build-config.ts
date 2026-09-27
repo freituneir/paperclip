@@ -67,6 +67,16 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (permissionMode) ac.claudePermissionMode = permissionMode;
   const fallbackModel = v.claudeFallbackModel?.trim();
   if (fallbackModel) ac.fallbackModel = fallbackModel;
+  if (v.claudePermissionBridge === "off") ac.permissionBridge = "off";
+  const permissionWaitSec = v.claudePermissionWaitSec;
+  if (
+    typeof permissionWaitSec === "number" &&
+    Number.isFinite(permissionWaitSec) &&
+    permissionWaitSec > 0 &&
+    permissionWaitSec !== 600
+  ) {
+    ac.permissionWaitSec = Math.floor(permissionWaitSec);
+  }
   const allowedTools = parseCommaArgs(v.claudeAllowedTools ?? "");
   if (allowedTools.length > 0) ac.allowedTools = allowedTools;
   const disallowedTools = parseCommaArgs(v.claudeDisallowedTools ?? "");

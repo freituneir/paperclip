@@ -1350,6 +1350,43 @@ export interface ConnectionIntentResult {
   supersededByInteractionId?: string | null;
 }
 
+export type RequestConfirmationClaudePermissionOutcome =
+  | "allow_once"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always"
+  | "cancel";
+
+/** A Claude Code `ask`-rule permission request surfaced as an approval card. */
+export interface RequestConfirmationClaudePermissionPayload {
+  version: 1;
+  /** sha256(toolName + canonical rawInput); matches one-time grants. */
+  fingerprint: string;
+  toolCallId: string | null;
+  toolName: string | null;
+  title: string | null;
+  kind: string | null;
+  /** Command (Bash-like input) or JSON preview, capped at 2000 chars. */
+  inputPreview: string;
+  options: { optionId: string; name: string; kind: string }[];
+  /** True when the provider offered an allow_always option. */
+  alwaysAvailable: boolean;
+  runId: string;
+  agentId: string;
+  /** Set when the live wait timed out and the card stayed open. */
+  parkedAt?: string | null;
+  /**
+   * Set when a human resolves the card (live or late): allow_once /
+   * allow_always (accept; always only with rememberAction + alwaysAvailable)
+   * or reject_once (reject).
+   */
+  outcome?: RequestConfirmationClaudePermissionOutcome | null;
+  decidedAt?: string | null;
+  /** Set when an acceptance was used (live, or as a one-time grant). */
+  consumedAt?: string | null;
+  consumedByRunId?: string | null;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1364,6 +1401,7 @@ export interface RequestConfirmationPayload {
   target?: RequestConfirmationTarget | null;
   toolAction?: RequestConfirmationToolActionPayload;
   secretProposal?: RequestConfirmationSecretProposalPayload;
+  claudePermission?: RequestConfirmationClaudePermissionPayload;
   connectionAuthorization?: RequestConfirmationConnectionAuthorizationPayload;
 }
 

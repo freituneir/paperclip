@@ -43,6 +43,7 @@ const mockInteractionService = vi.hoisted(() => ({
   skipInteraction: vi.fn(),
   withdrawInteraction: vi.fn(),
   recordSecretProposalExecutionResult: vi.fn(),
+  getById: vi.fn(),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -58,6 +59,9 @@ vi.mock("../services/native-runtime/native-question-bridge.js", () => ({
   requestNativeQuestionRunCancellation: mockRequestNativeQuestionRunCancellation,
   validateNativeQuestionResponseInput: vi.fn(),
 }));
+const mockClaudePermissionResolveFromRoute = vi.hoisted(() =>
+  vi.fn(async () => ({ live: false, outcome: null as string | null })),
+);
 const mockQuestionResponseDeliveries = vi.hoisted(() => ({
   deliver: vi.fn(async () => null),
 }));
@@ -159,6 +163,11 @@ vi.mock("../services/trust-preset-resolver.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/claude-permission-bridge.js", () => ({
+    claudePermissionBridgeService: () => ({ resolveFromRoute: mockClaudePermissionResolveFromRoute }),
+    isClaudePermissionInteraction: (interaction: { kind?: string; payload?: { claudePermission?: unknown } }) =>
+      interaction.kind === "request_confirmation" && Boolean(interaction.payload?.claudePermission),
+  }));
   vi.doMock("../services/question-response-delivery.js", () => ({
     questionResponseDeliveryService: () => mockQuestionResponseDeliveries,
   }));
@@ -335,6 +344,7 @@ describe.sequential("issue thread interaction routes", () => {
       responsibleUserId: null,
     };
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
+    mockClaudePermissionResolveFromRoute.mockResolvedValue({ live: false, outcome: null });
     mockRequestNativeQuestionRunCancellation.mockResolvedValue(null);
     mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
     mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
@@ -1176,6 +1186,130 @@ describe.sequential("issue thread interaction routes", () => {
     );
     expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.payload).not.toHaveProperty("toolAction");
     expect(mockHeartbeatService.wakeup.mock.calls[0]?.[1]?.contextSnapshot).not.toHaveProperty("toolAction");
+  });
+
+  function claudePermissionInteraction(status: string, extra: Record<string, unknown> = {}) {
+    return {
+      id: "interaction-claude",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status,
+      continuationPolicy: "wake_assignee",
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      createdByAgentId: ASSIGNEE_AGENT_ID,
+      sourceRunId: null,
+      payload: {
+        version: 1,
+        prompt: "Claude Code wants to run Bash",
+        claudePermission: {
+          version: 1,
+          fingerprint: "fp",
+          toolCallId: "tool-1",
+          toolName: "Bash",
+          title: "git push",
+          kind: "execute",
+          inputPreview: "git push",
+          options: [],
+          alwaysAvailable: true,
+          runId: RUN_1,
+          agentId: ASSIGNEE_AGENT_ID,
+        },
+      },
+      result: status === "pending" ? null : { version: 1, outcome: status },
+      ...extra,
+    };
+  }
+
+  it("delivers a live Claude permission accept without a continuation wake", async () => {
+    mockInteractionService.getForIssue.mockResolvedValue(claudePermissionInteraction("pending"));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: claudePermissionInteraction("accepted"),
+      createdIssues: [],
+    });
+    mockClaudePermissionResolveFromRoute.mockResolvedValueOnce({ live: true, outcome: "allow_always" });
+    mockInteractionService.getById.mockResolvedValueOnce(
+      claudePermissionInteraction("accepted", { marker: "refreshed" }));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-claude/accept")
+      .send({ rememberAction: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.marker).toBe("refreshed");
+    expect(mockClaudePermissionResolveFromRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "interaction-claude", status: "accepted" }),
+      { accepted: true, rememberAction: true },
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_accepted" }),
+    );
+  });
+
+  it("wakes the assignee when a Claude permission accept has no live waiter", async () => {
+    mockInteractionService.getForIssue.mockResolvedValue(claudePermissionInteraction("pending"));
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: claudePermissionInteraction("accepted"),
+      createdIssues: [],
+    });
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-claude/accept")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({ interactionId: "interaction-claude", interactionStatus: "accepted" }),
+      }),
+    );
+  });
+
+  it("delivers a live Claude permission reject without a continuation wake", async () => {
+    mockInteractionService.getForIssue.mockResolvedValue(claudePermissionInteraction("pending"));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce(claudePermissionInteraction("rejected"));
+    mockClaudePermissionResolveFromRoute.mockResolvedValueOnce({ live: true, outcome: "reject_once" });
+    mockInteractionService.getById.mockResolvedValueOnce(claudePermissionInteraction("rejected"));
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-claude/reject")
+      .send({});
+
+    expect(res.status).toBe(200);
+    expect(mockClaudePermissionResolveFromRoute).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "interaction-claude", status: "rejected" }),
+      { accepted: false },
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.thread_interaction_rejected" }),
+    );
+  });
+
+  it("returns a conflict for a second Claude permission accept", async () => {
+    const { HttpError } = await import("../errors.js");
+    mockInteractionService.getForIssue.mockResolvedValue(claudePermissionInteraction("accepted"));
+    mockInteractionService.acceptInteraction.mockRejectedValueOnce(
+      new HttpError(409, "Interaction has already been resolved"),
+    );
+    const app = await createApp();
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-claude/accept")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(mockClaudePermissionResolveFromRoute).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("executes an accepted tool-action confirmation through the gateway callback", async () => {

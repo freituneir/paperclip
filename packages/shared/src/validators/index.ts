@@ -469,6 +469,8 @@ export {
   requestConfirmationResumeFailureSchema,
   requestConfirmationResultSchema,
   requestConfirmationSecretProposalPayloadSchema,
+  requestConfirmationClaudePermissionPayloadSchema,
+  requestConfirmationClaudePermissionOutcomeSchema,
   requestConfirmationSecretProposalResultSchema,
   requestCheckboxConfirmationOptionSchema,
   requestCheckboxConfirmationPayloadSchema,

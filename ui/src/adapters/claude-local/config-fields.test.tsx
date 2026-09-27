@@ -177,4 +177,66 @@ describe("Claude Code config fields", () => {
     });
     expect(set).toHaveBeenCalledWith({ claudeSettingsOverlayJson: "{}" });
   });
+  it("edits the approval-card bridge and wait time", () => {
+    const mark = vi.fn();
+    const { container } = render({ mark });
+
+    expect(container.textContent).toContain(
+      "When Claude Code hits a permission rule that asks first, ask here in the task chat instead of auto-approving. ACP engine only.",
+    );
+    const toggle = container.querySelector('[data-testid="claude-permission-bridge-toggle"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+    const wait = fieldControl<HTMLInputElement>(container, "Wait for an answer (seconds)", "input");
+    expect(wait.value).toBe("600");
+
+    act(() => {
+      (toggle as HTMLElement).click();
+    });
+    expect(mark).toHaveBeenCalledWith("adapterConfig", "permissionBridge", "off");
+
+    act(() => {
+      setNativeValue(wait, "120");
+      wait.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(mark).toHaveBeenCalledWith("adapterConfig", "permissionWaitSec", 120);
+
+    act(() => {
+      setNativeValue(wait, "600");
+      wait.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(mark).toHaveBeenLastCalledWith("adapterConfig", "permissionWaitSec", undefined);
+  });
+
+  it("reads a stored bridge opt-out and wait time, and toggles back to the default", () => {
+    const mark = vi.fn();
+    const { container } = render({ mark, config: { permissionBridge: "off", permissionWaitSec: 90 } });
+
+    const toggle = container.querySelector('[data-testid="claude-permission-bridge-toggle"]');
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(fieldControl<HTMLInputElement>(container, "Wait for an answer (seconds)", "input").value).toBe("90");
+    act(() => {
+      (toggle as HTMLElement).click();
+    });
+    expect(mark).toHaveBeenCalledWith("adapterConfig", "permissionBridge", undefined);
+  });
+
+  it("writes create values for the approval-card bridge", () => {
+    const set = vi.fn();
+    const { container } = render({
+      mode: "create",
+      isCreate: true,
+      values: { ...defaultCreateValues },
+      set,
+    });
+    act(() => {
+      (container.querySelector('[data-testid="claude-permission-bridge-toggle"]') as HTMLElement).click();
+    });
+    expect(set).toHaveBeenCalledWith({ claudePermissionBridge: "off" });
+    const wait = fieldControl<HTMLInputElement>(container, "Wait for an answer (seconds)", "input");
+    act(() => {
+      setNativeValue(wait, "30");
+      wait.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(set).toHaveBeenCalledWith({ claudePermissionWaitSec: 30 });
+  });
 });

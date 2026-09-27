@@ -288,6 +288,10 @@ import {
   validateNativeQuestionResponseInput,
 } from "../services/native-runtime/native-question-bridge.js";
 import {
+  claudePermissionBridgeService,
+  isClaudePermissionInteraction,
+} from "../services/claude-permission-bridge.js";
+import {
   createCompanySearchRateLimiter,
   type CompanySearchRateLimiter,
 } from "../services/company-search-rate-limit.js";
@@ -3507,6 +3511,7 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
+  const claudePermissionBridge = claudePermissionBridgeService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
   const access = accessService(db);
   const secretProposals = createSecretProposalsService(db);
@@ -15967,7 +15972,8 @@ export function issueRoutes(
         res.json(await interactionSvc.getById(current.id));
         return;
       }
-      if (req.body.rememberAction)
+      const claudePermissionCard = isClaudePermissionInteraction(current);
+      if (req.body.rememberAction && !claudePermissionCard)
         throw unprocessable(
           "Remembered permission is only supported for tool reviews",
         );
@@ -15997,6 +16003,25 @@ export function issueRoutes(
             ).secretProposal
           : null;
       let continuationInteraction = interaction;
+      // A Claude permission card answered while its run is still waiting
+      // resolves that run in-process; the live run continues, so no
+      // continuation wake is queued. Without a live waiter the acceptance
+      // stays unconsumed (a one-time grant) and the normal wake runs below.
+      let claudePermissionDeliveredLive = false;
+      if (claudePermissionCard) {
+        const delivery = await claudePermissionBridge.resolveFromRoute(
+          interaction,
+          {
+            accepted: interaction.status === "accepted",
+            rememberAction: req.body.rememberAction === true,
+          },
+        );
+        claudePermissionDeliveredLive = delivery.live;
+        if (delivery.live) {
+          continuationInteraction =
+            (await interactionSvc.getById(interaction.id)) ?? interaction;
+        }
+      }
       if (
         interaction.kind === "request_confirmation" &&
         interaction.status === "accepted" &&
@@ -16216,7 +16241,7 @@ export function issueRoutes(
         interaction.status === "accepted" &&
         acceptedPlanTarget?.issueId === issue.id &&
         acceptedPlanTarget.key === "plan";
-      await queueResolvedInteractionContinuationWakeup({
+      if (!claudePermissionDeliveredLive) await queueResolvedInteractionContinuationWakeup({
         db,
         heartbeat,
         issue: { ...continuationWakeIssue, companyId: issue.companyId },
@@ -16330,16 +16355,31 @@ export function issueRoutes(
         },
       });
 
-      await queueResolvedInteractionContinuationWakeup({
-        db,
-        heartbeat,
-        issue,
-        interaction,
-        actor,
-        source: "issue.interaction.reject",
-      });
+      let rejectedInteraction = interaction;
+      let claudePermissionDeliveredLive = false;
+      if (isClaudePermissionInteraction(interaction)) {
+        const delivery = await claudePermissionBridge.resolveFromRoute(
+          interaction,
+          { accepted: false },
+        );
+        claudePermissionDeliveredLive = delivery.live;
+        if (delivery.live) {
+          rejectedInteraction =
+            (await interactionSvc.getById(interaction.id)) ?? interaction;
+        }
+      }
 
-      res.json(interaction);
+      if (!claudePermissionDeliveredLive)
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.reject",
+        });
+
+      res.json(rejectedInteraction);
     },
   );
 

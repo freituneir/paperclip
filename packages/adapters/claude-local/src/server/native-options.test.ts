@@ -18,6 +18,8 @@ describe("parseClaudeNativeOptions", () => {
       allowedTools: [],
       disallowedTools: [],
       settingsOverlay: null,
+      permissionBridge: "task_chat",
+      permissionWaitSec: 600,
     });
   });
 
@@ -39,12 +41,23 @@ describe("parseClaudeNativeOptions", () => {
       allowedTools: ["Read", "Bash(git log:*)"],
       disallowedTools: ["WebFetch", "WebSearch"],
       settingsOverlay: { model: "opus" },
+      permissionBridge: "task_chat",
+      permissionWaitSec: 600,
     });
     expect(parseClaudeNativeOptions({ claudePermissionMode: "plan" }).permissionMode).toBe("plan");
     expect(parseClaudeNativeOptions({ claudeHome: "bogus", settingsOverlay: {} })).toMatchObject({
       claudeHome: "company",
       settingsOverlay: null,
     });
+  });
+
+  it("parses the permission bridge and clamps the wait", () => {
+    expect(parseClaudeNativeOptions({ permissionBridge: "off" }).permissionBridge).toBe("off");
+    expect(parseClaudeNativeOptions({ permissionBridge: "bogus" }).permissionBridge).toBe("task_chat");
+    expect(parseClaudeNativeOptions({ permissionWaitSec: 1 }).permissionWaitSec).toBe(10);
+    expect(parseClaudeNativeOptions({ permissionWaitSec: 999_999 }).permissionWaitSec).toBe(86_400);
+    expect(parseClaudeNativeOptions({ permissionWaitSec: "90.7" }).permissionWaitSec).toBe(90);
+    expect(parseClaudeNativeOptions({ permissionWaitSec: "x" }).permissionWaitSec).toBe(600);
   });
 });
 

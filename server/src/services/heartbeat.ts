@@ -49,6 +49,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
+import { buildClaudePermissionRequester } from "./claude-permission-bridge.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
@@ -23932,6 +23933,14 @@ export function heartbeatService(
                       : undefined,
                     runtimeMcp,
                     runtimeTools,
+                    requestPermission: buildClaudePermissionRequester({
+                      db,
+                      adapterType: agent.adapterType,
+                      companyId: agent.companyId,
+                      agentId: agent.id,
+                      runId: run.id,
+                      issueId: issueRef?.id ?? null,
+                    }),
                     onLog,
                     onMeta: onAdapterMeta,
                     onEvent: onAdapterEvent,
