@@ -1,6 +1,6 @@
 # Claude permission bridge: `ask` rules become Paperclip approval cards
 
-Status: design + plan (branch `claude-transparency`). Date: 2026-09-27.
+Status: implemented (branch `claude-transparency`), hardened after security review. Date: 2026-09-27.
 
 ## Intent
 
@@ -136,3 +136,27 @@ requestPermission?: (request: AdapterPermissionRequest, opts: { signal: AbortSig
   only in the interaction payload, which is company-scoped.
 - The permission to answer is the same as for any `request_confirmation`
   (human_only).
+
+## Post-review hardening (implemented)
+
+- **Provenance:**
+  - The public create route rejects `payload.claudePermission` and
+    `claude-permission:` idempotency keys.
+  - These cards are governed. They are human_only and are never addressed to or
+    resolved by agents.
+  - A grant requires a card the bridge created (agent creator, no user creator,
+    bridge key, human_only), a user resolver and a recorded outcome.
+- **Fail closed:** with the bridge on, host errors, `undefined` or invalid
+  answers, a released or empty sink, and runs without a task all deny
+  (`reject_once`, or `cancel` when aborted). They never fall back to acpx
+  `approve-all`. This supersedes the "undefined falls back to the mode" line
+  above.
+- **Channels:** these cards are never sent to external chat channels. Answers
+  from Telegram, plugins or other non-Paperclip paths are refused.
+- **Redaction:** tool name, title and preview are secret-redacted before they
+  are stored. The fingerprint still uses the raw input.
+- **Respecting user modes:** bypass is filled only when no Claude Home or project
+  settings file sets `permissions.defaultMode`. Otherwise that mode applies and
+  the manifest warns.
+- **Behavior change:** an `ask` rule on a run without a task is now denied, the
+  same as headless Claude. It used to be auto-approved.

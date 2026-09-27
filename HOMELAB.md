@@ -120,6 +120,20 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
   - The **Claude Home** page edits `settings.json`, CLAUDE.md and MCP servers,
     and lists plugins, skills, subagents, commands and hooks. It can also
     **adopt** a native http/sse server into a governed Paperclip connection.
+- **Permission approvals.** Claude Code `permissions.ask` rules become
+  approval cards in the task chat on the ACP engine. They can live in Claude
+  Home, an agent overlay or a repo's `.claude/settings.json`.
+  - Buttons: Allow once, Always allow (only when Claude offers it; it doesn't
+    for ask rules) and Deny.
+  - The run waits live for up to `permissionWaitSec` (default 600).
+  - If nobody answers in time, Claude is told no and the card stays open. A
+    later approval wakes the agent and allows that exact call once on its next
+    run.
+  - `deny` rules are always enforced.
+  - With nobody to ask, the request is denied: runs without a task, the CLI
+    engine, and answers from Telegram or plugins, which are refused.
+  - Agents can't create or answer these cards.
+  - Per agent: *Approval cards for ask rules* (on by default) and a wait time.
 - **Native editing:** the real CLI is the power editor. Plugins, OAuth MCP
   logins and `claude mcp add` all write straight into the home:
   ```
