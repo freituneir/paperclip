@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
-const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn() }));
+const mocks = vi.hoisted(() => ({ claude: vi.fn(), claudeQuota: vi.fn(), codex: vi.fn(), codexQuota: vi.fn(), readFile: vi.fn(), credentialFile: vi.fn(), mkdtemp: vi.fn(), rm: vi.fn(), execFile: vi.fn() }));
 vi.mock("@paperclipai/adapter-claude-local/server", () => ({ readClaudeToken: mocks.claude, fetchClaudeQuota: mocks.claudeQuota }));
 vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: mocks.codex, fetchCodexQuota: mocks.codexQuota }));
 vi.mock("../services/local-ai-credential-file.js", () => ({ readLocalAiCredentialFile: mocks.credentialFile }));
-vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
+vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile, mkdtemp: mocks.mkdtemp, rm: mocks.rm } }));
+vi.mock("node:child_process", () => ({ execFile: mocks.execFile }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
 describe("explicit local subscription import", () => {
   it("verifies Claude only from the selected isolated home, never the host account", async () => {
@@ -66,6 +67,26 @@ describe("explicit local subscription import", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+  });
+  it("verifies a setup token by running Claude when the usage endpoint is rate limited", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-setup-fixture" } }));
+    mocks.claudeQuota.mockRejectedValue(new Error("anthropic usage api returned 429"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 429 })));
+    mocks.mkdtemp.mockResolvedValue("/tmp/paperclip-claude-verify-x"); mocks.rm.mockResolvedValue(undefined);
+    mocks.execFile.mockImplementation((_cmd, _args, _opts, cb) => cb(null, "OK\n", ""));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("sk-ant-oat01-setup-fixture");
+    expect(mocks.execFile).toHaveBeenCalledWith("claude", ["-p", "Reply with exactly: OK"], expect.objectContaining({
+      env: expect.objectContaining({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-setup-fixture", CLAUDE_CONFIG_DIR: "/tmp/paperclip-claude-verify-x" }),
+    }), expect.any(Function));
+    expect(mocks.rm).toHaveBeenCalledWith("/tmp/paperclip-claude-verify-x", { recursive: true, force: true });
+  });
+  it("rejects a rate-limited token that cannot run Claude", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-bad" } }));
+    mocks.claudeQuota.mockRejectedValue(new Error("anthropic usage api returned 429"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 429 })));
+    mocks.mkdtemp.mockResolvedValue("/tmp/paperclip-claude-verify-y"); mocks.rm.mockResolvedValue(undefined);
+    mocks.execFile.mockImplementation((_cmd, _args, _opts, cb) => cb(new Error("exit 1"), "", "Invalid API key"));
     await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
   });
   it("does not probe again when the normal usage check succeeds", async () => {

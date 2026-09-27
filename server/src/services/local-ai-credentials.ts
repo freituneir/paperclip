@@ -1,6 +1,8 @@
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { readClaudeToken, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
 import { readCodexAuthInfo, fetchCodexQuota } from "@paperclipai/adapter-codex-local/server";
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
@@ -14,20 +16,50 @@ import { unprocessable } from "../errors.js";
  * one-year token instead of `claude auth login`'s short-lived access token,
  * which expires within hours because its refresh token is not kept.
  */
-async function isClaudeSetupTokenWithoutUsageScope(token: string): Promise<boolean> {
+async function claudeUsageProbeStatus(token: string): Promise<number> {
   const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
     headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
     redirect: "error", signal: AbortSignal.timeout(15000),
   });
   await response.body?.cancel();
-  return response.status === 403;
+  return response.status;
+}
+
+/**
+ * The usage endpoint is tightly rate limited (the connection screen polls it),
+ * so a 429 proves nothing. Fall back to what agents actually do: run one tiny
+ * Claude prompt with the token in an isolated, throwaway config directory.
+ */
+async function claudeCanRunWithToken(token: string): Promise<boolean> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-verify-"));
+  try {
+    return await new Promise<boolean>((resolve) => {
+      execFile("claude", ["-p", "Reply with exactly: OK"], {
+        timeout: 120_000,
+        env: {
+          PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+          HOME: home,
+          CLAUDE_CONFIG_DIR: home,
+          CLAUDE_CODE_OAUTH_TOKEN: token,
+          DISABLE_TELEMETRY: "1",
+          DISABLE_ERROR_REPORTING: "1",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        },
+      }, (error, stdout) => resolve(!error && /\bOK\b/.test(String(stdout))));
+    });
+  } finally {
+    await fs.rm(home, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 async function verifyClaudeToken(token: string): Promise<void> {
   try {
     await fetchClaudeQuota(token);
   } catch (error) {
-    if (!(await isClaudeSetupTokenWithoutUsageScope(token).catch(() => false))) throw error;
+    const status = await claudeUsageProbeStatus(token).catch(() => 0);
+    if (status === 403) return;
+    if (status === 429 && await claudeCanRunWithToken(token)) return;
+    throw error;
   }
 }
 
