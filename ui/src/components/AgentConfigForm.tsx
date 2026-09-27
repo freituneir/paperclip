@@ -1778,6 +1778,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
+                showSourceCaption={adapterType === "claude_local"}
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
                 required={adapterType === "opencode_local" || adapterType === "pi_local"}
                 groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
@@ -3728,6 +3729,26 @@ function ExperimentalBadge() {
   );
 }
 
+function formatReportedDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/** Where the model list came from: Claude-reported (authoritative) or the built-in fallback. */
+export function ModelSourceCaption({ models }: { models: AdapterModel[] }) {
+  const reported = models.find((m) => m.source === "claude");
+  return (
+    <p className="mt-1 text-xs text-muted-foreground" data-testid="model-source-caption">
+      {reported
+        ? reported.reportedAt
+          ? `Reported by Claude (${formatReportedDate(reported.reportedAt)})`
+          : "Reported by Claude"
+        : "Built-in list — models are verified after the agent's first run"}
+    </p>
+  );
+}
+
 export function ModelDropdown({
   models,
   value,
@@ -3746,6 +3767,7 @@ export function ModelDropdown({
   detectModelLabel,
   emptyDetectHint,
   defaultLabel,
+  showSourceCaption,
 }: {
   models: AdapterModel[];
   value: string;
@@ -3764,8 +3786,13 @@ export function ModelDropdown({
   detectModelLabel?: string;
   emptyDetectHint?: string;
   defaultLabel?: string;
+  /** Show where the model list came from (Claude-reported vs built-in). */
+  showSourceCaption?: boolean;
 }) {
   const [modelSearch, setModelSearch] = useState("");
+  // Server order is meaningful once entries carry a source (Claude-reported
+  // first), so keep it instead of sorting alphabetically.
+  const hasSourceInfo = models.some((m) => m.source !== undefined);
   const [detectingModel, setDetectingModel] = useState(false);
   const selected = models.find((m) => m.id === value);
   const manualModel = modelSearch.trim();
@@ -3802,7 +3829,9 @@ export function ModelDropdown({
       return [
         {
           provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
+          entries: hasSourceInfo
+            ? filteredModels
+            : [...filteredModels].sort((a, b) => a.id.localeCompare(b.id)),
         },
       ];
     }
@@ -3819,7 +3848,7 @@ export function ModelDropdown({
         provider,
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id)),
       }));
-  }, [filteredModels, groupByProvider]);
+  }, [filteredModels, groupByProvider, hasSourceInfo]);
 
   async function handleDetectModel() {
     if (!onDetectModel) return;
@@ -4024,9 +4053,17 @@ export function ModelDropdown({
                       onOpenChange(false);
                     }}
                   >
-                    <span className="block w-full text-left truncate" title={m.id}>
+                    <span className="block w-full text-left truncate" title={m.note ? `${m.id} — ${m.note}` : m.id}>
                       {groupByProvider ? extractModelName(m.id) : m.label}
                     </span>
+                    {m.source === "builtin" && (
+                      <span
+                        className="ml-2 shrink-0 text-(length:--text-nano) text-muted-foreground/70"
+                        title="From the built-in list; not yet confirmed by Claude"
+                      >
+                        unverified
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>
@@ -4043,6 +4080,7 @@ export function ModelDropdown({
           </div>
         </PopoverContent>
       </Popover>
+      {showSourceCaption && <ModelSourceCaption models={models} />}
     </Field>
   );
 }

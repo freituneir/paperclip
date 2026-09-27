@@ -278,9 +278,21 @@ export interface AdapterExecutionContext {
   startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
+/**
+ * Where a model entry came from: `claude` = reported by the running Claude
+ * binary for the logged-in account (authoritative), `api` = the provider's
+ * model-list API, `builtin` = the adapter's hardcoded fallback (unverified).
+ */
+export type AdapterModelSource = "claude" | "builtin" | "api";
+
 export interface AdapterModel {
   id: string;
   label: string;
+  source?: AdapterModelSource;
+  /** Short human-readable note (e.g. a description the provider reported). */
+  note?: string;
+  /** ISO timestamp of when a provider-reported entry was last reported. */
+  reportedAt?: string;
 }
 
 export type AdapterEnvironmentCheckLevel = "info" | "warn" | "error";

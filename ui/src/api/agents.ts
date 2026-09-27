@@ -44,6 +44,10 @@ export interface AgentKey {
 export interface AdapterModel {
   id: string;
   label: string;
+  /** `claude` = reported by the running Claude binary; `builtin` = hardcoded, unverified. */
+  source?: "claude" | "builtin" | "api";
+  note?: string;
+  reportedAt?: string;
 }
 
 export interface DetectedAdapterModel {

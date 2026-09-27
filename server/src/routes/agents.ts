@@ -1,4 +1,5 @@
 import { listOpenRouterModels } from "../services/openrouter-models.js";
+import { mergeClaudeModelLists, readClaudeReportedModels } from "../services/claude-reported-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, AI_CONNECTION_CAPABILITIES, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -3224,6 +3225,18 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
+    if (modelAdapterType === "claude_local") {
+      // Models reported by the running Claude binary for this company are
+      // authoritative; the hardcoded list only fills in (marked "builtin").
+      const reported = await readClaudeReportedModels(process.env, companyId);
+      // With an API key, ids beyond the hardcoded list came from /v1/models.
+      const builtinIds = new Set((requireServerAdapter("claude_local").models ?? []).map((m) => m.id));
+      const apiIds = process.env.ANTHROPIC_API_KEY?.trim()
+        ? new Set(models.map((m) => m.id).filter((id) => !builtinIds.has(id)))
+        : new Set<string>();
+      res.json(mergeClaudeModelLists(reported, models, apiIds));
+      return;
+    }
     res.json(models);
   });
 

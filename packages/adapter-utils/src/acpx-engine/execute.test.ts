@@ -1288,6 +1288,86 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(statusLine?.text).toContain('"cost"');
   });
 
+  it("emits one provider.models event from the Claude runtime's model state", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
+    const makeRuntime = (getStatus: () => Promise<unknown>) =>
+      createAcpxEngineExecutor({
+        createRuntime: () => ({
+          ensureSession: async () => ({
+            backendSessionId: "backend-session",
+            agentSessionId: "agent-session",
+            runtimeSessionName: "runtime-session",
+          }),
+          getStatus,
+          startTurn: () => ({
+            events: (async function* () {
+              yield { type: "done", stopReason: "end_turn" };
+            })(),
+            result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
+            cancel: async () => {},
+          }),
+          close: async () => {},
+        }) as never,
+      });
+    const run = (execute: ReturnType<typeof makeRuntime>, agent: string, runId: string) =>
+      execute({
+        runId,
+        agent: { id: "agent-1", companyId: "company-1" },
+        runtime: {},
+        config: { agent, agentCommand: "node ./fake-acp.js", stateDir: path.join(stateDir, runId) },
+        context: {},
+        onLog: async () => {},
+        onMeta: async () => {},
+        onEvent: async (event: { eventType: string; payload?: Record<string, unknown> }) => {
+          events.push(event);
+        },
+      } as never);
+
+    const status = {
+      models: { currentModelId: "default", availableModelIds: ["default", "opus", "sonnet"] },
+      details: {
+        configOptions: [
+          { id: "mode", type: "select", category: "mode", currentValue: "default", options: [{ value: "default", name: "Default" }] },
+          {
+            id: "model",
+            type: "select",
+            category: "model",
+            currentValue: "default",
+            options: [
+              { value: "default", name: "Default (recommended)", description: "Opus 5.5" },
+              { value: "opus", name: "Opus", description: "Most capable" },
+              { value: "sonnet", name: "Sonnet" },
+            ],
+          },
+        ],
+      },
+    };
+    const claudeResult = await run(makeRuntime(async () => status), "claude", "run-models-claude");
+    expect(claudeResult.exitCode).toBe(0);
+    const modelEvents = events.filter((event) => event.eventType === "provider.models");
+    expect(modelEvents).toHaveLength(1);
+    expect(modelEvents[0]?.payload).toEqual({
+      provider: "anthropic",
+      agent: "claude",
+      currentModelId: "default",
+      models: [
+        { id: "default", label: "Default (recommended)", description: "Opus 5.5" },
+        { id: "opus", label: "Opus", description: "Most capable" },
+        { id: "sonnet", label: "Sonnet" },
+      ],
+    });
+
+    // Non-claude agents never emit it, and a throwing getStatus never fails the run.
+    events.length = 0;
+    const custom = await run(makeRuntime(async () => status), "custom", "run-models-custom");
+    expect(custom.exitCode).toBe(0);
+    const broken = await run(makeRuntime(async () => { throw new Error("boom"); }), "claude", "run-models-broken");
+    expect(broken.exitCode).toBe(0);
+    expect(events.filter((event) => event.eventType === "provider.models")).toHaveLength(0);
+  });
+
   it("falls back to usage_update events when the runtime lacks getStatus", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

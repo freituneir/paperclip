@@ -950,6 +950,43 @@ describe("AgentConfigForm environment selector", () => {
     expect(existing.onSave).not.toHaveBeenCalled();
   });
 
+  it("captions Claude-reported model lists and marks builtin entries unverified", async () => {
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "default", label: "Default (recommended)", source: "claude", reportedAt: "2026-09-01T12:00:00.000Z" },
+      { id: "claude-mythos-5", label: "Claude Mythos 5", source: "builtin" },
+    ]);
+    const reported = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(reported.root);
+    const caption = reported.container.querySelector('[data-testid="model-source-caption"]');
+    expect(caption?.textContent).toMatch(/^Reported by Claude \(.+2026\)$/);
+
+    const trigger = Array.from(reported.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Default (claude-opus-5)"));
+    expect(trigger).not.toBeUndefined();
+    await act(async () => {
+      trigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    const options = Array.from(document.body.querySelectorAll("button")).map((button) => button.textContent?.trim());
+    // Claude-reported entries keep server order ahead of builtin ones.
+    const reportedIndex = options.indexOf("Default (recommended)");
+    const builtinIndex = options.indexOf("Claude Mythos 5unverified");
+    expect(reportedIndex).toBeGreaterThanOrEqual(0);
+    expect(builtinIndex).toBeGreaterThan(reportedIndex);
+  });
+
+  it("captions the built-in Claude model list before the first run", async () => {
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "claude-opus-5", label: "Claude Opus 5", source: "builtin" },
+    ]);
+    const result = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(result.root);
+    expect(result.container.querySelector('[data-testid="model-source-caption"]')?.textContent)
+      .toBe("Built-in list — models are verified after the agent's first run");
+  });
+
   it("keeps secret access out of the main Configuration content", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),

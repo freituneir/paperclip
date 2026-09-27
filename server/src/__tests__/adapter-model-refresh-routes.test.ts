@@ -212,6 +212,59 @@ describe("adapter model refresh route", () => {
     expect(listModels).not.toHaveBeenCalled();
   });
 
+  it("serves Claude-reported models first for claude_local, then builtin entries", async () => {
+    const fs = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    const os = await vi.importActual<typeof import("node:os")>("node:os");
+    const path = await vi.importActual<typeof import("node:path")>("node:path");
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-route-"));
+    const previousRoot = process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+    const previousKey = process.env.ANTHROPIC_API_KEY;
+    process.env.PAPERCLIP_CLAUDE_HOME_ROOT = root;
+    delete process.env.ANTHROPIC_API_KEY;
+    try {
+      const app = await createApp();
+      const before = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/claude_local/models"),
+      );
+      expect(before.status, JSON.stringify(before.body)).toBe(200);
+      expect(before.body.length).toBeGreaterThan(0);
+      expect(before.body.every((m: { source?: string }) => m.source === "builtin")).toBe(true);
+
+      await fs.mkdir(path.join(root, "company-1"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "company-1", ".paperclip-models.json"),
+        JSON.stringify({
+          version: 1,
+          provider: "anthropic",
+          agent: "claude",
+          models: [
+            { id: "default", label: "Default (recommended)" },
+            { id: before.body[0].id, label: "Reported label" },
+          ],
+          currentModelId: "default",
+          reportedAt: "2026-09-01T00:00:00.000Z",
+          agentId: "agent-1",
+          runId: "run-1",
+        }),
+      );
+      const after = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/companies/company-1/adapters/claude_local/models"),
+      );
+      expect(after.status).toBe(200);
+      expect(after.body.slice(0, 2)).toEqual([
+        { id: "default", label: "Default (recommended)", source: "claude", reportedAt: "2026-09-01T00:00:00.000Z" },
+        { id: before.body[0].id, label: "Reported label", source: "claude", reportedAt: "2026-09-01T00:00:00.000Z" },
+      ]);
+      expect(after.body).toHaveLength(before.body.length + 1);
+      expect(after.body.slice(2).every((m: { source?: string }) => m.source === "builtin")).toBe(true);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCLIP_CLAUDE_HOME_ROOT;
+      else process.env.PAPERCLIP_CLAUDE_HOME_ROOT = previousRoot;
+      if (previousKey !== undefined) process.env.ANTHROPIC_API_KEY = previousKey;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips OpenCode model discovery for non-local environments", async () => {
     mockEnvironmentService.getById.mockResolvedValue({
       id: "env-1",

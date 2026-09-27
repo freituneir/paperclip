@@ -144,6 +144,7 @@ import {
   type RuntimeCacheEntry,
 } from "./run-site-host.js";
 import { createSandboxRunSite, type SandboxRunSite } from "./run-site-sandbox.js";
+import { emitProviderModelsEvent, providerModelsFromRuntimeStatus } from "./provider-models.js";
 import {
   createRuntimeSpanRunner,
   emitRunPhaseTiming,
@@ -4700,6 +4701,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // scoped hoisted local, so the settlement `endSession` step can cancel it.
       let runPrompt = "";
       let preTurnStatus: AcpRuntimeStatus | null = null;
+      let providerModelsEmitted = false;
       // Phase-timing markers for the prepare_turn and turn phases. The prepare
       // phase covers the prompt build and the pre-turn usage snapshot; the turn
       // phase covers the started turn and the event relay.
@@ -4769,6 +4771,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // Snapshot pre-turn usage so cumulative agent-reported cost can be
         // attributed to this run alone.
         preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+        // "Models reported by Claude": forward the model list the running
+        // Claude binary advertised for this session, once per run. Advisory
+        // only — any failure here is swallowed.
+        if (prepared.acpxAgent === "claude" && !providerModelsEmitted) {
+          providerModelsEmitted = true;
+          try {
+            const providerModels = providerModelsFromRuntimeStatus(preTurnStatus);
+            if (providerModels) await emitProviderModelsEvent(ctx, providerModels);
+          } catch {
+            // never fail a run over model discovery
+          }
+        }
         // The prepare phase (prompt build + usage snapshot) finished; the turn
         // phase starts next.
         await emitPhase("prepare_turn", preparePhaseStart, "ok");

@@ -1,4 +1,5 @@
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { PROVIDER_MODELS_EVENT_TYPE, recordProviderModelsEvent } from "./claude-reported-models.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasAcknowledgedNativeStopIntent, isAcknowledgedNativeStop, acknowledgedNativeStopExecutionHasStopped } from "./acknowledged-native-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
@@ -22611,6 +22612,17 @@ export function heartbeatService(
             message: event.message,
             payload: event.payload,
           });
+          if (eventType === PROVIDER_MODELS_EVENT_TYPE) {
+            // Advisory: persist the model list Claude reported for this company.
+            // recordProviderModelsEvent never throws; it must not fail the run.
+            void recordProviderModelsEvent({
+              adapterType: agent.adapterType,
+              companyId: agent.companyId,
+              agentId: agent.id,
+              runId: run.id,
+              event: { eventType, payload: event.payload },
+            });
+          }
         };
 
         const adapter = getServerAdapter(agent.adapterType);
