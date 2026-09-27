@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
+import type { AskUserQuestionsInteraction, RequestConfirmationInteraction } from "@paperclipai/shared";
 import { TelegramAdapter } from "@chat-adapter/telegram";
 import { Actions, Button, Card, CardText } from "chat";
 import {
   createChatQuestionOptionActionToken,
   nativeChatQuestion,
+  nativeTelegramConfirmation,
   TELEGRAM_CALLBACK_DATA_LIMIT_BYTES,
   telegramCallbackDataByteLength,
   telegramChatSdkCallbackData,
@@ -140,5 +141,30 @@ describe("Telegram question action payloads", () => {
     expect(
       telegramCallbackDataByteLength(actionId, interactionId),
     ).toBeGreaterThan(TELEGRAM_CALLBACK_DATA_LIMIT_BYTES);
+  });
+});
+
+describe("native Telegram confirmation eligibility", () => {
+  function confirmation(extra: Record<string, unknown> = {}): RequestConfirmationInteraction {
+    const base = closedQuestion();
+    return {
+      ...base,
+      kind: "request_confirmation",
+      payload: { version: 1, prompt: "Proceed?", ...extra },
+    } as unknown as RequestConfirmationInteraction;
+  }
+
+  it("renders ordinary confirmations as inline buttons", () => {
+    expect(nativeTelegramConfirmation(confirmation())).not.toBeNull();
+  });
+
+  it("keeps Claude Code permission requests in Paperclip", () => {
+    expect(
+      nativeTelegramConfirmation(
+        confirmation({
+          claudePermission: { version: 1, fingerprint: "fp", agentId: "agent-1", runId: "run-1" },
+        }),
+      ),
+    ).toBeNull();
   });
 });

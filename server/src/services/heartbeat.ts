@@ -23940,6 +23940,7 @@ export function heartbeatService(
                       agentId: agent.id,
                       runId: run.id,
                       issueId: issueRef?.id ?? null,
+                      onNotice: (message) => onLog("stderr", `${message}\n`),
                     }),
                     onLog,
                     onMeta: onAdapterMeta,

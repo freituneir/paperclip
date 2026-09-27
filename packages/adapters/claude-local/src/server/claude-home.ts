@@ -244,6 +244,20 @@ export async function findProjectSettingsAuthConflicts(
   return found;
 }
 
+/**
+ * The project settings Claude loads from the run cwd, by file name
+ * (`settings.json`, `settings.local.json`). Missing or malformed files yield null.
+ */
+export async function readProjectClaudeSettings(
+  cwd: string,
+): Promise<Record<"settings.json" | "settings.local.json", Record<string, unknown> | null>> {
+  const read = async (name: string) => {
+    const result = await readJsonObjectFile(path.join(cwd, ".claude", name));
+    return result.status === "ok" ? result.value : null;
+  };
+  return { "settings.json": await read("settings.json"), "settings.local.json": await read("settings.local.json") };
+}
+
 /** Whether a Claude config dir holds a file-based login (`.credentials.json`). */
 export async function claudeConfigDirHasCredentialsFile(dir: string): Promise<boolean> {
   return fs.access(path.join(dir, ".credentials.json")).then(() => true, () => false);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { and, asc, eq, gte, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNotNull, isNull, like, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
 import { issueThreadInteractions } from "@paperclipai/db";
@@ -13,7 +13,9 @@ import type {
 import type { RequestConfirmationClaudePermissionPayload } from "@paperclipai/shared";
 
 import { logger } from "../middleware/logger.js";
+import { redactSensitiveText } from "../redaction.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 
 /**
  * Claude permission bridge: a Claude Code `ask`-rule permission request raised
@@ -45,6 +47,14 @@ export interface ClaudePermissionInteractionRef {
   issueId: string;
   status: string;
   payload: unknown;
+  /** Provenance: a bridge card is created by the agent itself, never a user. */
+  idempotencyKey: string | null;
+  createdByAgentId: string | null;
+  createdByUserId: string | null;
+  resolvedByAgentId: string | null;
+  resolvedByUserId: string | null;
+  requestedResolverPolicy: string | null;
+  effectiveResolverPolicy: string | null;
 }
 
 export interface ClaudePermissionGrantQuery {
@@ -71,7 +81,11 @@ export interface ClaudePermissionStore {
     issueId: string;
     idempotencyKey: string;
   }): Promise<ClaudePermissionInteractionRef | null>;
-  /** Accepted, unconsumed grants, oldest first. */
+  /**
+   * Accepted, unconsumed grants with bridge provenance (created by this
+   * agent's bridge, human-only, resolved by a user, outcome recorded), oldest
+   * first.
+   */
   findGrantCandidates(query: ClaudePermissionGrantQuery): Promise<ClaudePermissionInteractionRef[]>;
   create(input: ClaudePermissionCreateInput): Promise<ClaudePermissionInteractionRef>;
   /**
@@ -130,12 +144,12 @@ function cap(text: string): string {
     : text;
 }
 
-export function buildClaudePermissionInputPreview(rawInput: unknown): string {
+function renderClaudePermissionInput(rawInput: unknown): string {
   if (rawInput === undefined || rawInput === null) return "";
-  if (typeof rawInput === "string") return cap(rawInput);
+  if (typeof rawInput === "string") return rawInput;
   if (typeof rawInput === "object" && !Array.isArray(rawInput)) {
     const command = (rawInput as Record<string, unknown>).command;
-    if (typeof command === "string" && command.trim().length > 0) return cap(command);
+    if (typeof command === "string" && command.trim().length > 0) return command;
   }
   let encoded: string | undefined;
   try {
@@ -143,7 +157,11 @@ export function buildClaudePermissionInputPreview(rawInput: unknown): string {
   } catch {
     encoded = String(rawInput);
   }
-  return cap(encoded ?? "");
+  return encoded ?? "";
+}
+
+export function buildClaudePermissionInputPreview(rawInput: unknown): string {
+  return cap(renderClaudePermissionInput(rawInput));
 }
 
 function readClaudePermission(payload: unknown): ClaudePermissionPayload | null {
@@ -152,6 +170,38 @@ function readClaudePermission(payload: unknown): ClaudePermissionPayload | null 
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as ClaudePermissionPayload)
     : null;
+}
+
+/**
+ * Whether a row was created by the permission bridge for this agent: the
+ * reserved idempotency-key prefix, created by the agent (never a user), and
+ * pinned human-only. The public create route refuses both the key prefix and
+ * the claudePermission payload, so only the bridge produces such rows.
+ */
+function hasBridgeProvenance(ref: ClaudePermissionInteractionRef, agentId: string): boolean {
+  const claudePermission = readClaudePermission(ref.payload);
+  return (
+    claudePermission !== null &&
+    claudePermission.agentId === agentId &&
+    typeof ref.idempotencyKey === "string" &&
+    ref.idempotencyKey.startsWith(CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX) &&
+    ref.createdByAgentId === agentId &&
+    ref.createdByUserId === null &&
+    ref.requestedResolverPolicy === "human_only" &&
+    ref.effectiveResolverPolicy === "human_only"
+  );
+}
+
+/** An acceptance a human recorded through the Paperclip routes. */
+function isHumanAcceptance(ref: ClaudePermissionInteractionRef): boolean {
+  const claudePermission = readClaudePermission(ref.payload);
+  return (
+    ref.status === "accepted" &&
+    typeof ref.resolvedByUserId === "string" &&
+    ref.resolvedByUserId.length > 0 &&
+    ref.resolvedByAgentId === null &&
+    Boolean(claudePermission?.outcome)
+  );
 }
 
 export function isClaudePermissionInteraction(interaction: { kind?: string; payload?: unknown }): boolean {
@@ -202,12 +252,26 @@ export function createDbClaudePermissionStore(db: Db): ClaudePermissionStore {
     issueId: string;
     status: string;
     payload: unknown;
+    idempotencyKey: string | null;
+    createdByAgentId: string | null;
+    createdByUserId: string | null;
+    resolvedByAgentId: string | null;
+    resolvedByUserId: string | null;
+    requestedResolverPolicy: string | null;
+    effectiveResolverPolicy: string | null;
   }): ClaudePermissionInteractionRef => ({
     id: row.id,
     companyId: row.companyId,
     issueId: row.issueId,
     status: row.status,
     payload: row.payload,
+    idempotencyKey: row.idempotencyKey ?? null,
+    createdByAgentId: row.createdByAgentId ?? null,
+    createdByUserId: row.createdByUserId ?? null,
+    resolvedByAgentId: row.resolvedByAgentId ?? null,
+    resolvedByUserId: row.resolvedByUserId ?? null,
+    requestedResolverPolicy: row.requestedResolverPolicy ?? null,
+    effectiveResolverPolicy: row.effectiveResolverPolicy ?? null,
   });
   return {
     async findByIdempotencyKey(input) {
@@ -234,10 +298,22 @@ export function createDbClaudePermissionStore(db: Db): ClaudePermissionStore {
             eq(t.issueId, query.issueId),
             eq(t.kind, "request_confirmation"),
             eq(t.status, "accepted"),
+            // Provenance: only cards the bridge created for this agent,
+            // pinned human-only and answered by a user, are grants.
             eq(t.createdByAgentId, query.agentId),
+            isNull(t.createdByUserId),
+            like(t.idempotencyKey, `${CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX}%`),
+            eq(t.requestedResolverPolicy, "human_only"),
+            eq(t.effectiveResolverPolicy, "human_only"),
+            isNotNull(t.resolvedByUserId),
+            isNull(t.resolvedByAgentId),
             gte(t.resolvedAt, query.since),
             sql`${t.payload}->'claudePermission'->>'fingerprint' = ${query.fingerprint}`,
             sql`${t.payload}->'claudePermission'->>'agentId' = ${query.agentId}`,
+            // The outcome is written by the route after the accept commits; a
+            // live accept writes it together with consumedAt, so an accepted
+            // card whose outcome is not recorded yet is never a grant.
+            sql`(${t.payload}->'claudePermission'->>'outcome') is not null`,
             sql`(${t.payload}->'claudePermission'->>'consumedAt') is null`,
           ),
         )
@@ -297,12 +373,27 @@ export function createDbClaudePermissionStore(db: Db): ClaudePermissionStore {
 export interface ClaudePermissionBridgeOptions {
   store?: ClaudePermissionStore;
   now?: () => Date;
+  /** Redacts secret values from card text before it is stored. */
+  redact?: (binding: ClaudePermissionBinding & { issueId: string }, text: string) => Promise<string>;
+}
+
+function createDefaultRedactor(db: Db | null): NonNullable<ClaudePermissionBridgeOptions["redact"]> {
+  const registry = db ? createRunSecretRedactionRegistry(db) : null;
+  return async (binding, text) => {
+    let redacted = text;
+    if (registry) {
+      redacted = await registry.redactForRun(binding.companyId, binding.runId, redacted);
+      redacted = await registry.redactForIssue(binding.companyId, binding.issueId, redacted);
+    }
+    return redactSensitiveText(redacted);
+  };
 }
 
 export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermissionBridgeOptions = {}) {
   const store = opts.store ?? (db ? createDbClaudePermissionStore(db) : null);
   if (!store) throw new Error("claudePermissionBridgeService requires a db or a store");
   const now = opts.now ?? (() => new Date());
+  const redact = opts.redact ?? createDefaultRedactor(db);
 
   async function consumeGrant(
     binding: ClaudePermissionBinding & { issueId: string },
@@ -318,7 +409,8 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
     for (const candidate of candidates) {
       const claudePermission = readClaudePermission(candidate.payload);
       if (
-        candidate.status !== "accepted" ||
+        !hasBridgeProvenance(candidate, binding.agentId) ||
+        !isHumanAcceptance(candidate) ||
         !claudePermission ||
         claudePermission.fingerprint !== fingerprint ||
         claudePermission.agentId !== binding.agentId ||
@@ -405,10 +497,19 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
         issueId: binding.issueId,
         idempotencyKey,
       });
+      if (interaction && !hasBridgeProvenance(interaction, binding.agentId)) {
+        logger.warn(
+          { ...log, interactionId: interaction.id },
+          "claude permission bridge: idempotency key is held by a card without bridge provenance; rejecting",
+        );
+        return { outcome: "reject_once" };
+      }
       if (interaction) {
         // A replay of the same tool call in the same run: reuse its card.
         const existing = readClaudePermission(interaction.payload);
         if (interaction.status === "accepted") {
+          // Only a human acceptance whose outcome is already recorded counts.
+          if (!isHumanAcceptance(interaction)) return { outcome: "reject_once" };
           if (existing && !existing.consumedAt) {
             const consumed = await store!.patch(
               interaction.id,
@@ -434,10 +535,11 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
           version: 1,
           fingerprint,
           toolCallId: request.toolCallId ? request.toolCallId.slice(0, 500) : null,
-          toolName: request.toolName ? request.toolName.slice(0, 500) : null,
-          title: request.title ? request.title.slice(0, 1000) : null,
+          toolName: request.toolName ? (await redact(issueBinding, request.toolName)).slice(0, 500) : null,
+          title: request.title ? (await redact(issueBinding, request.title)).slice(0, 1000) : null,
           kind: request.kind ? request.kind.slice(0, 120) : null,
-          inputPreview: buildClaudePermissionInputPreview(request.rawInput),
+          // Redact before capping so a secret cut at the cap cannot leak a prefix.
+          inputPreview: cap(await redact(issueBinding, renderClaudePermissionInput(request.rawInput))),
           options,
           alwaysAvailable: options.some((option) => option.kind === "allow_always"),
           runId: binding.runId,
@@ -451,6 +553,14 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
           idempotencyKey,
           claudePermission,
         });
+        if (!hasBridgeProvenance(interaction, binding.agentId) || interaction.status !== "pending") {
+          // The service reused a row with this key that the bridge did not make.
+          logger.warn(
+            { ...log, interactionId: interaction.id },
+            "claude permission bridge: created card lacks bridge provenance; rejecting",
+          );
+          return { outcome: "reject_once" };
+        }
         logger.info(
           { ...log, interactionId: interaction.id, label: toolLabel(request) },
           "claude permission bridge: created permission card",
@@ -475,7 +585,7 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
    * the one-time grant for the next matching request.
    */
   async function resolveFromRoute(
-    interaction: ClaudePermissionInteractionRef,
+    interaction: Pick<ClaudePermissionInteractionRef, "id" | "companyId" | "status" | "payload">,
     answer: { accepted: boolean; rememberAction?: boolean },
   ): Promise<{ live: boolean; outcome: AdapterPermissionOutcome | null }> {
     const claudePermission = readClaudePermission(interaction.payload);
@@ -508,9 +618,10 @@ export function claudePermissionBridgeService(db: Db | null, opts: ClaudePermiss
 }
 
 /**
- * Build `ctx.requestPermission` for an adapter invocation. Only claude_local
- * runs that have an issue get the bridge; everything else leaves it unset so
- * the adapter falls back to its permission mode.
+ * Build `ctx.requestPermission` for an adapter invocation. Every claude_local
+ * run gets the bridge, with or without an issue: an ask rule with nobody to
+ * ask is denied (as headless Claude does), never auto-approved by the
+ * adapter's fallback. Other adapters leave it unset.
  */
 export function buildClaudePermissionRequester(input: {
   db: Db | null;
@@ -520,16 +631,28 @@ export function buildClaudePermissionRequester(input: {
   runId: string;
   issueId: string | null | undefined;
   bridge?: Pick<ReturnType<typeof claudePermissionBridgeService>, "requestPermission">;
+  /** Receives a human-readable line for the run log. */
+  onNotice?: (message: string) => void | Promise<void>;
 }): AdapterExecutionContext["requestPermission"] {
-  if (input.adapterType !== "claude_local" || !input.issueId) return undefined;
-  const issueId = input.issueId;
+  if (input.adapterType !== "claude_local") return undefined;
+  const issueId = input.issueId ?? null;
   let bridge = input.bridge ?? null;
-  return (request, opts) => {
+  return async (request, opts) => {
     bridge ??= claudePermissionBridgeService(input.db);
-    return bridge.requestPermission(
+    const decision = await bridge.requestPermission(
       { companyId: input.companyId, agentId: input.agentId, runId: input.runId, issueId },
       request,
       opts,
     );
+    if (!issueId && input.onNotice) {
+      try {
+        await input.onNotice(
+          `Claude asked for permission (${toolLabel(request)}) but this run has no task to post an approval card to; denied.`,
+        );
+      } catch (err) {
+        logger.warn({ err, runId: input.runId }, "claude permission bridge: failed to write run notice");
+      }
+    }
+    return decision;
   };
 }

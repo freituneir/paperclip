@@ -11,6 +11,7 @@ import {
   buildClaudeAcpConfig,
   createClaudeAcpExecutor,
   PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV,
+  readClaudeSettingsDefaultMode,
   resolveClaudeAcpPermissionBridge,
 } from "./acp.js";
 import { parseClaudeNativeOptions } from "./native-options.js";
@@ -534,5 +535,102 @@ describe("Claude ACP permission bridge", () => {
     const offMeta: AdapterInvocationMeta[] = [];
     await execute(buildContext(root, { permissionBridge: "off" }, { onMeta: async (payload) => { offMeta.push(payload); } }));
     expect(offMeta[0]?.launchManifest).toMatchObject({ permission: { bridge: "off" }, settingsOverlayKeys: [] });
+  });
+
+  it("does not fill bypass when a settings source defines permissions.defaultMode", () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    for (const mode of ["plan", "dontAsk"]) {
+      const settingsDefaultMode = { mode, source: "Claude Home settings" };
+      expect(resolveClaudeAcpPermissionBridge({}, { companyId: "c1", settingsDefaultMode })).toEqual({
+        state: "task_chat",
+        fillBypassDefaultMode: false,
+        settingsDefaultMode,
+      });
+      const built = buildClaudeAcpConfig({}, {}, { companyId: "c1", settingsDefaultMode });
+      expect(built.permissionBridge).toBe("task_chat");
+      expect(sdkOf(built).settings).toBeUndefined();
+    }
+    // A settings mode needs no bypass, so root keeps the bridge.
+    expect(
+      resolveClaudeAcpPermissionBridge({}, { companyId: "c1", settingsDefaultMode: { mode: "plan", source: "x" } }, 0, {}).state,
+    ).toBe("task_chat");
+    // A settings bypass is no stricter than the fill.
+    expect(
+      resolveClaudeAcpPermissionBridge({}, {
+        companyId: "c1",
+        settingsDefaultMode: { mode: "bypassPermissions", source: "x" },
+      }).fillBypassDefaultMode,
+    ).toBe(true);
+    // An explicit agent mode still wins over settings.
+    expect(
+      resolveClaudeAcpPermissionBridge({ claudePermissionMode: "acceptEdits" }, {
+        companyId: "c1",
+        settingsDefaultMode: { mode: "plan", source: "x" },
+      }),
+    ).toEqual({ state: "task_chat", fillBypassDefaultMode: false });
+  });
+
+  it("reads the settings defaultMode from Claude Home and project settings, ignoring Paperclip's own local write", async () => {
+    const root = await makeTempRoot("paperclip-claude-acp-settings-mode-");
+    await expect(readClaudeSettingsDefaultMode({ homeSettings: null, cwd: root })).resolves.toBeNull();
+    await expect(
+      readClaudeSettingsDefaultMode({ homeSettings: { permissions: { defaultMode: "dontAsk" } }, cwd: root }),
+    ).resolves.toEqual({ mode: "dontAsk", source: "Claude Home settings" });
+    await fs.mkdir(path.join(root, ".claude"), { recursive: true });
+    // Paperclip's ACP engine writes defaultMode "default" (and rewrites dontAsk) here.
+    await fs.writeFile(
+      path.join(root, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { defaultMode: "default" } }),
+    );
+    await expect(readClaudeSettingsDefaultMode({ homeSettings: null, cwd: root })).resolves.toBeNull();
+    await fs.writeFile(path.join(root, ".claude", "settings.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
+    await expect(
+      readClaudeSettingsDefaultMode({ homeSettings: { permissions: { defaultMode: "dontAsk" } }, cwd: root }),
+    ).resolves.toEqual({ mode: "plan", source: "Project settings .claude/settings.json" });
+    await fs.writeFile(
+      path.join(root, ".claude", "settings.local.json"),
+      JSON.stringify({ permissions: { defaultMode: "acceptEdits" } }),
+    );
+    await expect(readClaudeSettingsDefaultMode({ homeSettings: null, cwd: root })).resolves.toEqual({
+      mode: "acceptEdits",
+      source: "Project settings .claude/settings.local.json",
+    });
+  });
+
+  it("keeps a Claude Home settings defaultMode instead of filling bypass, with a manifest warning", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    for (const mode of ["plan", "dontAsk"]) {
+      const home = homeDirFor("company-1");
+      await fs.mkdir(home, { recursive: true });
+      await fs.writeFile(path.join(home, "settings.json"), JSON.stringify({ permissions: { defaultMode: mode } }));
+      const root = await makeTempRoot("paperclip-claude-acp-bridge-home-mode-");
+      const meta: AdapterInvocationMeta[] = [];
+      const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+      await execute(buildContext(root, {}, {
+        onMeta: async (payload) => {
+          meta.push(payload);
+        },
+      }));
+      const manifest = meta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+      expect(manifest.permission).toMatchObject({ mode, source: "acp_default", bridge: "task_chat" });
+      expect(manifest.settingsOverlayKeys).toEqual([]);
+      expect(manifest.warnings).toContain(
+        `Claude Home settings set permissions.defaultMode=${mode}; approval cards will appear for everything that mode asks about.`,
+      );
+    }
+  });
+
+  it("fills bypass when no settings source defines permissions.defaultMode", async () => {
+    vi.spyOn(process, "getuid").mockReturnValue(501);
+    const home = homeDirFor("company-1");
+    await fs.mkdir(home, { recursive: true });
+    await fs.writeFile(path.join(home, "settings.json"), JSON.stringify({ permissions: { ask: ["Bash(git push:*)"] } }));
+    const root = await makeTempRoot("paperclip-claude-acp-bridge-no-mode-");
+    const meta: AdapterInvocationMeta[] = [];
+    const execute = createClaudeAcpExecutor({ createRuntime: () => new FakeRuntime() as never });
+    await execute(buildContext(root, {}, { onMeta: async (payload) => { meta.push(payload); } }));
+    const manifest = meta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
+    expect(manifest.permission).toMatchObject({ mode: "bypassPermissions", source: "permission_bridge" });
+    expect(manifest.warnings.some((warning) => warning.includes("permissions.defaultMode="))).toBe(false);
   });
 });

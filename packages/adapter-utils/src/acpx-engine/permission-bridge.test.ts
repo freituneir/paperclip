@@ -7,6 +7,7 @@ import type { AdapterExecutionContext } from "../types.js";
 import { createAcpxEngineExecutor } from "./execute.js";
 import {
   acpxPermissionHookForSink,
+  claimAcpxPermissionSink,
   createAcpxPermissionHandler,
   createAcpxPermissionSink,
   mapAcpPermissionRequest,
@@ -135,21 +136,63 @@ describe("createAcpxPermissionHandler", () => {
     expect(JSON.stringify(events)).not.toContain("secret-token");
   });
 
-  it("falls back to the mode when the host throws or returns undefined", async () => {
+  it("fails closed (reject_once) when the host throws, returns undefined, or an invalid outcome", async () => {
     const throwing = makeCtx({
       requestPermission: vi.fn(async () => {
         throw new Error("boom");
       }),
     });
     const handler = createAcpxPermissionHandler({ ctx: throwing.ctx, runSignal: new AbortController().signal })!;
-    await expect(handler(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
+    await expect(handler(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_once",
+    });
     expect(throwing.logs.join("")).toContain("Permission bridge failed");
-    expect(throwing.events[1]?.payload).toEqual({ toolCallId: "tool-1", outcome: null, source: "mode" });
+    expect(throwing.events[1]?.payload).toEqual({ toolCallId: "tool-1", outcome: "reject_once", source: "fail_closed" });
 
     const empty = makeCtx({ requestPermission: vi.fn(async () => undefined) });
     const emptyHandler = createAcpxPermissionHandler({ ctx: empty.ctx, runSignal: new AbortController().signal })!;
-    await expect(emptyHandler(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
-    expect(empty.events[1]?.payload).toMatchObject({ source: "mode", outcome: null });
+    await expect(emptyHandler(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_once",
+    });
+    expect(empty.events[1]?.payload).toMatchObject({ source: "fail_closed", outcome: "reject_once" });
+
+    const invalid = makeCtx({ requestPermission: vi.fn(async () => ({ outcome: "approve" }) as never) });
+    const invalidHandler = createAcpxPermissionHandler({ ctx: invalid.ctx, runSignal: new AbortController().signal })!;
+    await expect(invalidHandler(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_once",
+    });
+    expect(invalid.events[1]?.payload).toMatchObject({ source: "fail_closed", outcome: "reject_once" });
+  });
+
+  it("cancels without asking the host when the run signal is already aborted", async () => {
+    const requestPermission = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    const { ctx, events } = makeCtx({ requestPermission });
+    const runAbort = new AbortController();
+    runAbort.abort();
+    const handler = createAcpxPermissionHandler({ ctx, runSignal: runAbort.signal })!;
+    await expect(handler(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "cancel",
+    });
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(events.find((event) => event.eventType === "permission.resolved")?.payload).toEqual({
+      toolCallId: "tool-1",
+      outcome: "cancel",
+      source: "fail_closed",
+    });
+  });
+
+  it("cancels when the host fails after the run aborted mid-wait", async () => {
+    const runAbort = new AbortController();
+    const requestPermission = vi.fn(async () => {
+      runAbort.abort();
+      throw new Error("aborted");
+    });
+    const { ctx, events } = makeCtx({ requestPermission });
+    const handler = createAcpxPermissionHandler({ ctx, runSignal: runAbort.signal })!;
+    await expect(handler(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "cancel",
+    });
+    expect(events[1]?.payload).toMatchObject({ outcome: "cancel", source: "fail_closed" });
   });
 
   it("passes a signal that aborts when the run ends", async () => {
@@ -168,7 +211,7 @@ describe("createAcpxPermissionHandler", () => {
 });
 
 describe("acpxPermissionHookForSink", () => {
-  it("returns undefined with an empty sink", async () => {
+  it("returns undefined with an empty sink while the bridge is off (legacy)", async () => {
     const sink = createAcpxPermissionSink();
     const hook = acpxPermissionHookForSink(sink);
     await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
@@ -176,6 +219,70 @@ describe("acpxPermissionHookForSink", () => {
     await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
       outcome: "reject_once",
     });
+  });
+
+  it("denies with an empty sink while the bridge is on", async () => {
+    const sink = createAcpxPermissionSink();
+    sink.bridgeEnabled = true;
+    const hook = acpxPermissionHookForSink(sink);
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_once",
+    });
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(hook(acpRequest(), { signal: aborted.signal })).resolves.toEqual({ outcome: "cancel" });
+  });
+});
+
+describe("claimAcpxPermissionSink", () => {
+  const allow = async () => ({ outcome: "allow_once" as const });
+  const reject = async () => ({ outcome: "reject_always" as const });
+
+  it("routes a reused runtime's hook to each run in turn and denies after release", async () => {
+    const sink = createAcpxPermissionSink();
+    const hook = acpxPermissionHookForSink(sink);
+    const releaseFirst = claimAcpxPermissionSink({ sink, handler: allow, runId: "run-1" });
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({ outcome: "allow_once" });
+    releaseFirst();
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({ outcome: "reject_once" });
+
+    const releaseSecond = claimAcpxPermissionSink({ sink, handler: reject, runId: "run-2" });
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_always",
+    });
+    releaseSecond();
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({ outcome: "reject_once" });
+  });
+
+  it("records the bridge mode of the claiming run (off keeps legacy undefined)", async () => {
+    const sink = createAcpxPermissionSink();
+    const hook = acpxPermissionHookForSink(sink);
+    claimAcpxPermissionSink({ sink, handler: allow, runId: "run-1" })();
+    claimAcpxPermissionSink({ sink, handler: null, runId: "run-2" })();
+    expect(sink.bridgeEnabled).toBe(false);
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
+  });
+
+  it("reports an overlapping claim and a stale release never clears the new owner", async () => {
+    const sink = createAcpxPermissionSink();
+    const hook = acpxPermissionHookForSink(sink);
+    const overlaps: Array<string | null> = [];
+    const releaseFirst = claimAcpxPermissionSink({ sink, handler: allow, runId: "run-1" });
+    const releaseSecond = claimAcpxPermissionSink({
+      sink,
+      handler: reject,
+      runId: "run-2",
+      onOverlap: (previous) => overlaps.push(previous),
+    });
+    expect(overlaps).toEqual(["run-1"]);
+    releaseFirst();
+    expect(sink.ownerRunId).toBe("run-2");
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_always",
+    });
+    releaseSecond();
+    expect(sink.current).toBeNull();
+    expect(sink.ownerRunId).toBeNull();
   });
 });
 
@@ -241,9 +348,12 @@ describe("ACPX engine permission bridge", () => {
     expect(permissionEvents.map((event) => event.eventType)).toEqual(["permission.requested", "permission.resolved"]);
     expect(JSON.stringify(permissionEvents)).not.toContain("secret-token");
 
-    // A warm runtime keeps the hook, but the finished run's sink is cleared.
+    // A warm runtime keeps the hook, but the finished run's sink is cleared:
+    // a late request after release is denied, never approved by the mode.
     const hook = runtimeOptions[0]!.onPermissionRequest!;
-    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toEqual({
+      outcome: "reject_once",
+    });
     expect(requestPermission).toHaveBeenCalledOnce();
   });
 
@@ -263,12 +373,24 @@ describe("ACPX engine permission bridge", () => {
     expect(decisions).toEqual([undefined]);
   });
 
-  it("falls back to the mode when the host throws", async () => {
-    const { decisions } = await runWithPermissionRequest({
+  it("fails closed when the host throws", async () => {
+    const { decisions, events } = await runWithPermissionRequest({
       requestPermission: async () => {
         throw new Error("host down");
       },
     });
-    expect(decisions).toEqual([undefined]);
+    expect(decisions).toEqual([{ outcome: "reject_once" }]);
+    expect(events.find((event) => event.eventType === "permission.resolved")?.payload).toMatchObject({
+      source: "fail_closed",
+    });
+  });
+
+  it("keeps the legacy undefined on a late request when the bridge was off", async () => {
+    const { runtimeOptions } = await runWithPermissionRequest({
+      config: { permissionBridge: "off" },
+      requestPermission: vi.fn(async () => ({ outcome: "allow_once" as const })),
+    });
+    const hook = runtimeOptions[0]!.onPermissionRequest!;
+    await expect(hook(acpRequest(), { signal: new AbortController().signal })).resolves.toBeUndefined();
   });
 });

@@ -288,6 +288,7 @@ import {
   validateNativeQuestionResponseInput,
 } from "../services/native-runtime/native-question-bridge.js";
 import {
+  CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX,
   claudePermissionBridgeService,
   isClaudePermissionInteraction,
 } from "../services/claude-permission-bridge.js";
@@ -326,6 +327,7 @@ import {
 } from "../services/issue-review-policy.js";
 import {
   evaluateIssueThreadInteractionResolverAudience,
+  isGovernedConfirmationPayload,
   issueThreadInteractionAttentionAgentAllowed,
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
@@ -4656,14 +4658,9 @@ export function issueRoutes(
             ? interaction.createdByAgentId === input.actorAgentId &&
               interaction.sourceRunId === input.actorRunId
             : interaction.createdByUserId === input.actorId) &&
-          !(
-            interaction.kind === "request_confirmation" &&
-            interaction.payload &&
-            typeof interaction.payload === "object" &&
-            (("toolAction" in interaction.payload &&
-              interaction.payload.toolAction !== undefined) ||
-              ("secretProposal" in interaction.payload &&
-                interaction.payload.secretProposal !== undefined))
+          !isGovernedConfirmationPayload(
+            interaction.kind,
+            interaction.payload,
           ),
       );
       if (!designatedReviewConfirmation) {
@@ -5646,13 +5643,6 @@ export function issueRoutes(
         interaction,
       );
     }
-    const payload =
-      interaction.payload && typeof interaction.payload === "object"
-        ? (interaction.payload as {
-            toolAction?: unknown;
-            secretProposal?: unknown;
-          })
-        : null;
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
@@ -5666,10 +5656,10 @@ export function issueRoutes(
             : { type: "user", userId: actor.actorId },
         interaction,
         additionalRestriction: resolverPolicyRestriction,
-        governedAction:
-          interaction.kind === "request_confirmation" &&
-          (payload?.toolAction !== undefined ||
-            payload?.secretProposal !== undefined),
+        governedAction: isGovernedConfirmationPayload(
+          interaction.kind,
+          interaction.payload,
+        ),
       });
     if (!decision.allowed) {
       return denyIssueThreadInteractionResolution(res, {
@@ -15806,6 +15796,24 @@ export function issueRoutes(
           "payload.secretProposal is server-owned metadata and cannot be supplied when creating an interaction",
         );
       }
+      if (
+        req.body.kind === "request_confirmation" &&
+        req.body.payload?.claudePermission !== undefined
+      ) {
+        throw unprocessable(
+          "payload.claudePermission is server-owned metadata and cannot be supplied when creating an interaction",
+        );
+      }
+      if (
+        typeof req.body.idempotencyKey === "string" &&
+        req.body.idempotencyKey
+          .trim()
+          .startsWith(CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX)
+      ) {
+        throw unprocessable(
+          `Idempotency keys starting with "${CLAUDE_PERMISSION_IDEMPOTENCY_PREFIX}" are reserved for server-owned Claude permission requests`,
+        );
+      }
 
       // Plan-document confirmation targets are validated authoritatively inside
       // issueThreadInteractionService.create, which re-reads the plan document's
@@ -15859,12 +15867,10 @@ export function issueRoutes(
         issueThreadInteractionAttentionAgentAllowed({
           agentId: interaction.addresseeAgentId,
           interaction,
-          governedAction:
-            interaction.kind === "request_confirmation" &&
-            typeof interaction.payload === "object" &&
-            interaction.payload !== null &&
-            "toolAction" in interaction.payload &&
-            interaction.payload.toolAction !== undefined,
+          governedAction: isGovernedConfirmationPayload(
+            interaction.kind,
+            interaction.payload,
+          ),
         })
       ) {
         void heartbeat
@@ -15978,14 +15984,22 @@ export function issueRoutes(
           "Remembered permission is only supported for tool reviews",
         );
       const { interaction, createdIssues, continuationIssue } =
-        await interactionSvc.acceptInteraction(issue, interactionId, req.body, {
-          agentId: actor.agentId,
-          runId: actor.runId,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-          resolverPolicyRestriction:
-            resolutionAuthorization.resolverPolicyRestriction,
-          suggestedTaskEffectsAuthorized,
-        });
+        await interactionSvc.acceptInteraction(
+          issue,
+          interactionId,
+          req.body,
+          {
+            agentId: actor.agentId,
+            runId: actor.runId,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+            resolverPolicyRestriction:
+              resolutionAuthorization.resolverPolicyRestriction,
+            suggestedTaskEffectsAuthorized,
+          },
+          ...(claudePermissionCard
+            ? [{ allowClaudePermissionAnswer: true }]
+            : []),
+        );
       const toolAction =
         interaction.payload && typeof interaction.payload === "object"
           ? (
@@ -16319,6 +16333,9 @@ export function issueRoutes(
           resolverPolicyRestriction:
             resolutionAuthorization.resolverPolicyRestriction,
         },
+        ...(isClaudePermissionInteraction(current)
+          ? [{ allowClaudePermissionAnswer: true }]
+          : []),
       );
 
       await logActivity(db, {

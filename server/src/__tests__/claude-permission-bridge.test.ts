@@ -17,7 +17,6 @@ const AGENT = "agent-1";
 const ISSUE = "issue-1";
 
 type Row = ClaudePermissionInteractionRef & {
-  idempotencyKey: string;
   agentId: string;
   resolvedAt: Date | null;
 };
@@ -47,6 +46,12 @@ function createMemoryStore() {
         status: "pending",
         idempotencyKey: input.idempotencyKey,
         agentId: input.agentId,
+        createdByAgentId: input.agentId,
+        createdByUserId: null,
+        resolvedByAgentId: null,
+        resolvedByUserId: null,
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
         resolvedAt: null,
         payload: { version: 1, prompt: "x", claudePermission: { ...input.claudePermission } },
       };
@@ -68,6 +73,7 @@ function createMemoryStore() {
     if (row.status !== "pending") throw Object.assign(new Error("already resolved"), { status: 409 });
     row.status = status;
     row.resolvedAt = at;
+    row.resolvedByUserId = "board-user";
     return row;
   };
   return { rows, store, resolve, cp };
@@ -306,9 +312,9 @@ describe("claude permission bridge", () => {
 describe("buildClaudePermissionRequester", () => {
   const base = { db: null, companyId: COMPANY, agentId: AGENT, runId: "run-1" };
 
-  it("only wires claude_local runs that have an issue", async () => {
+  it("wires only claude_local runs", async () => {
     expect(buildClaudePermissionRequester({ ...base, adapterType: "codex_local", issueId: ISSUE })).toBeUndefined();
-    expect(buildClaudePermissionRequester({ ...base, adapterType: "claude_local", issueId: null })).toBeUndefined();
+    expect(buildClaudePermissionRequester({ ...base, adapterType: "codex_local", issueId: null })).toBeUndefined();
     const bridge = { requestPermission: vi.fn(async () => ({ outcome: "allow_once" as const })) };
     const requester = buildClaudePermissionRequester({ ...base, adapterType: "claude_local", issueId: ISSUE, bridge });
     expect(requester).toBeTypeOf("function");
@@ -319,5 +325,27 @@ describe("buildClaudePermissionRequester", () => {
       bashRequest(),
       { signal, waitMs: 5 },
     );
+  });
+
+  it("wires claude_local runs without an issue so ask rules are denied, not auto-approved", async () => {
+    const { store } = createMemoryStore();
+    const bridge = claudePermissionBridgeService(null, { store });
+    const notices: string[] = [];
+    const requester = buildClaudePermissionRequester({
+      ...base,
+      adapterType: "claude_local",
+      issueId: null,
+      bridge,
+      onNotice: (message) => {
+        notices.push(message);
+      },
+    });
+    expect(requester).toBeTypeOf("function");
+    await expect(requester!(bashRequest(), { signal: new AbortController().signal, waitMs: 5 }))
+      .resolves.toEqual({ outcome: "reject_once" });
+    expect(store.create).not.toHaveBeenCalled();
+    expect(notices).toEqual([
+      "Claude asked for permission (Bash) but this run has no task to post an approval card to; denied.",
+    ]);
   });
 });

@@ -7,6 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHostRunSite, type RuntimeCacheEntry } from "./run-site-host.js";
+import { createAcpxPermissionSink } from "./permission-bridge.js";
 import type { AcpRunContext, ReadyRunResources } from "./run-contracts.js";
 
 function makeEntry(id: string, lastUsedAt: number): RuntimeCacheEntry {
@@ -15,6 +16,7 @@ function makeEntry(id: string, lastUsedAt: number): RuntimeCacheEntry {
     handle: { sessionKey: id } as never,
     childStderrState: { logPath: null, pendingLiveLine: "" },
     processIdentitySink: { current: undefined, latest: null },
+    permissionSink: createAcpxPermissionSink(),
     fingerprint: `fp-${id}`,
     lastUsedAt,
   };

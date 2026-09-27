@@ -1060,6 +1060,51 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
   });
 
   it.each(["accept", "reject"] as const)(
+    "respondInteraction refuses to %s a Claude Code permission request",
+    async (action) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const operatorUserId = randomUUID();
+      await db.insert(companyMemberships).values({
+        companyId, principalType: "user", principalId: operatorUserId, status: "active", membershipRole: "operator",
+      });
+      const issueId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId, companyId, title: "Permission", status: "in_progress", priority: "medium",
+      });
+      const interactionId = await seedInteraction(companyId, issueId, {
+        createdByAgentId: agentId,
+        requestedResolverPolicy: "human_only",
+        effectiveResolverPolicy: "human_only",
+        payload: {
+          version: 1,
+          prompt: "Claude Code wants to run Bash",
+          claudePermission: {
+            version: 1,
+            fingerprint: "fp",
+            toolCallId: "tool-1",
+            toolName: "Bash",
+            title: "cat .env",
+            kind: "execute",
+            inputPreview: "cat .env",
+            options: [],
+            alwaysAvailable: false,
+            runId: randomUUID(),
+            agentId,
+          },
+        } as never,
+      });
+      const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+
+      await expect(services.issues.respondInteraction({
+        issueId, interactionId, companyId, action, actorUserId: operatorUserId,
+      })).rejects.toThrow("Answer Claude Code permission requests in Paperclip");
+
+      const [row] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId));
+      expect(row?.status).toBe("pending");
+    },
+  );
+
+  it.each(["accept", "reject"] as const)(
     "respondInteraction rejects %s after the issue closes",
     async (action) => {
       const { companyId } = await seedCompanyAndAgent();

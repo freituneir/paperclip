@@ -57,8 +57,13 @@ export interface RuntimeCacheEntry {
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;
   processIdentitySink: AcpxProcessIdentitySink;
-  /** The permission target the runtime's `onPermissionRequest` hook reads. */
-  permissionSink?: AcpxPermissionSink;
+  /**
+   * The permission target the runtime's `onPermissionRequest` hook reads. It is
+   * required: the hook is bound to this exact object at runtime creation, so
+   * any site that saves a warm entry must carry the same sink, or a reused
+   * runtime's hook would read a sink no later run can claim.
+   */
+  permissionSink: AcpxPermissionSink;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: ReturnType<typeof setTimeout>;

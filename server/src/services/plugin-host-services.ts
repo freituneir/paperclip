@@ -2510,6 +2510,16 @@ export function buildHostServices(
         if (!current || current.issueId !== issue.id || current.companyId !== companyId) {
           throw new Error(`Interaction "${params.interactionId}" not found for this issue`);
         }
+        // Claude Code permission requests belong to the permission bridge
+        // (live run waits and one-time grants); only Paperclip answers them.
+        if (
+          current.kind === "request_confirmation" &&
+          current.payload &&
+          typeof current.payload === "object" &&
+          (current.payload as unknown as Record<string, unknown>).claudePermission !== undefined
+        ) {
+          throw new Error("Answer Claude Code permission requests in Paperclip");
+        }
         // Idempotent replay: an already-resolved interaction converges without
         // re-applying, so a duplicate button tap from chat is a safe no-op.
         if (current.status !== "pending") {

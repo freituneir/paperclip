@@ -112,6 +112,7 @@ import {
 import {
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
+  isGovernedConfirmationPayload,
   issueThreadInteractionResolutionError,
   type IssueThreadInteractionResolverRestriction,
 } from "./issue-thread-interaction-resolution.js";
@@ -172,6 +173,13 @@ export type IssueThreadInteractionServiceOptions = {
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type InteractionResolutionMutationOptions = {
+  /**
+   * Claude Code permission cards are answered only through the Paperclip
+   * accept/reject routes, which hand the answer to the permission bridge (live
+   * waiter / one-time grant). Every other surface (external chat, plugins)
+   * leaves this unset and is refused.
+   */
+  allowClaudePermissionAnswer?: boolean;
   beforeResolveInTransaction?: (tx: DbTransaction) => Promise<void>;
   afterResolveInTransaction?: (
     tx: DbTransaction,
@@ -268,7 +276,8 @@ export function getMergeConfirmationPullRequestReferences(
   if (
     !payload ||
     payload.toolAction !== undefined ||
-    payload.secretProposal !== undefined
+    payload.secretProposal !== undefined ||
+    payload.claudePermission !== undefined
   )
     return [];
 
@@ -382,6 +391,7 @@ export function resolveInteractionPolicy(args: {
   governance: InteractionResolverGovernance;
   hasToolAction: boolean;
   hasSecretProposal?: boolean;
+  hasClaudePermission?: boolean;
 }) {
   const kindGovernance = args.governance[args.kind];
   const requestedPolicyInput =
@@ -396,7 +406,7 @@ export function resolveInteractionPolicy(args: {
   let effectiveResolverPolicy = requestedResolverPolicy;
   let effectiveResolverPolicySource: IssueThreadInteractionEffectiveResolverPolicySource =
     "requested";
-  if (args.hasToolAction || args.hasSecretProposal) {
+  if (args.hasToolAction || args.hasSecretProposal || args.hasClaudePermission) {
     effectiveResolverPolicy = "human_only";
     effectiveResolverPolicySource = "governed_action";
   } else if (kindGovernance?.cap) {
@@ -443,15 +453,30 @@ function assertInteractionResolutionAllowed(
     actor: resolverActor(actor),
     interaction: current,
     additionalRestriction: actor.resolverPolicyRestriction,
-    governedAction:
-      current.kind === "request_confirmation" &&
-      current.payload !== null &&
-      typeof current.payload === "object" &&
-      (("toolAction" in current.payload &&
-        current.payload.toolAction !== undefined) ||
-        ("secretProposal" in current.payload &&
-          current.payload.secretProposal !== undefined)),
+    governedAction: isGovernedConfirmationPayload(current.kind, current.payload),
   });
+}
+
+const CLAUDE_PERMISSION_ANSWER_ELSEWHERE_MESSAGE =
+  "Answer Claude Code permission requests in Paperclip";
+
+function isClaudePermissionRow(current: { kind: string; payload: unknown }) {
+  return (
+    current.kind === "request_confirmation" &&
+    current.payload !== null &&
+    typeof current.payload === "object" &&
+    !Array.isArray(current.payload) &&
+    (current.payload as Record<string, unknown>).claudePermission !== undefined
+  );
+}
+
+function assertClaudePermissionAnswerSurface(
+  current: { kind: string; payload: unknown },
+  mutationOptions: InteractionResolutionMutationOptions,
+) {
+  if (isClaudePermissionRow(current) && mutationOptions.allowClaudePermissionAnswer !== true) {
+    throw forbidden(CLAUDE_PERMISSION_ANSWER_ELSEWHERE_MESSAGE);
+  }
 }
 
 type IssueResolutionContext = {
@@ -3310,6 +3335,9 @@ export function issueThreadInteractionService(
         hasSecretProposal:
           data.kind === "request_confirmation" &&
           data.payload.secretProposal !== undefined,
+        hasClaudePermission:
+          data.kind === "request_confirmation" &&
+          data.payload.claudePermission !== undefined,
       });
       const normalizedData = {
         ...data,
@@ -3342,6 +3370,14 @@ export function issueThreadInteractionService(
         ) {
           throw unprocessable(
             "Secret-proposal confirmations cannot be addressed to agents",
+          );
+        }
+        if (
+          normalizedData.kind === "request_confirmation" &&
+          normalizedData.payload.claudePermission !== undefined
+        ) {
+          throw unprocessable(
+            "Claude permission confirmations cannot be addressed to agents",
           );
         }
         const addressee = await db
@@ -3648,6 +3684,7 @@ export function issueThreadInteractionService(
         issue,
         interactionId,
       });
+      assertClaudePermissionAnswerSurface(current, mutationOptions);
       assertInteractionResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":
@@ -3918,6 +3955,7 @@ export function issueThreadInteractionService(
         issue,
         interactionId,
       });
+      assertClaudePermissionAnswerSurface(current, mutationOptions);
       assertInteractionResolutionAllowed(current, actor);
       switch (current.kind) {
         case "suggest_tasks":

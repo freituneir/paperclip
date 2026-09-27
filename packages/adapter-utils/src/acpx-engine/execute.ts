@@ -38,6 +38,7 @@ import {
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   acpxPermissionHookForSink,
+  claimAcpxPermissionSink,
   createAcpxPermissionHandler,
   createAcpxPermissionSink,
 } from "./permission-bridge.js";
@@ -4200,18 +4201,36 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         // heartbeat instead of the run that originally created the runtime.
         processIdentitySink.current = ctx.onSpawn;
         // The runtime's permission hook is installed once, at creation, and
-        // reads this sink. Point it at this run's handler (or none, so the
-        // permission mode decides) and clear it when the run ends.
+        // reads this sink. A reused runtime carries its sink on the warm entry
+        // (`RuntimeCacheEntry.permissionSink`, the same object its hook reads),
+        // so this run claims that sink rather than a fresh one the hook never
+        // sees. The claim records the run's bridge mode: after release, a late
+        // request fails closed while the bridge is on (legacy `undefined` only
+        // while it is off). ACP handles are serialized per agent session, so an
+        // overlapping claim is unexpected: it is logged and the newest run owns
+        // the routing.
         const permissionSink = cached?.permissionSink ?? createAcpxPermissionSink();
         const permissionRunAbort = new AbortController();
         const permissionHandler = createAcpxPermissionHandler({
           ctx,
           runSignal: permissionRunAbort.signal,
         });
-        permissionSink.current = permissionHandler;
+        const releaseSinkClaim = claimAcpxPermissionSink({
+          sink: permissionSink,
+          handler: permissionHandler,
+          runId: ctx.runId,
+          onOverlap: (previousOwnerRunId) => {
+            void ctx
+              .onLog(
+                "stderr",
+                `[paperclip] Permission sink was still owned by run ${previousOwnerRunId ?? "unknown"}; routing permission requests to run ${ctx.runId}.\n`,
+              )
+              .catch(() => {});
+          },
+        });
         releasePermissionSink = () => {
           permissionRunAbort.abort();
-          if (permissionSink.current === permissionHandler) permissionSink.current = null;
+          releaseSinkClaim();
         };
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;

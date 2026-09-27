@@ -186,6 +186,7 @@ export function nativeTelegramConfirmation(
     interaction.payload.rejectRequiresReason === true ||
     interaction.payload.toolAction !== undefined ||
     interaction.payload.secretProposal !== undefined ||
+    interaction.payload.claudePermission !== undefined ||
     interaction.payload.connectionAuthorization !== undefined ||
     interaction.payload.target?.type === "issue_document"
   ) {
@@ -245,6 +246,15 @@ export async function enqueueIssueInteractionChatPublications(
   if (
     interaction.kind !== "ask_user_questions" &&
     interaction.kind !== "request_confirmation"
+  ) {
+    return [];
+  }
+  // Claude Code permission requests are answered only in Paperclip: the
+  // permission bridge owns the live wait and one-time grants, and the card's
+  // preview can contain command text that must not leave the instance.
+  if (
+    interaction.kind === "request_confirmation" &&
+    interaction.payload.claudePermission !== undefined
   ) {
     return [];
   }

@@ -332,6 +332,42 @@ describeEmbeddedPostgres(
       ).resolves.toEqual([]);
     });
 
+    it("never externalizes Claude Code permission requests to chat providers", async () => {
+      const fixture = await seedBoundIssue(["slack", "telegram", "discord"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        {
+          kind: "request_confirmation",
+          idempotencyKey: `claude-permission:${randomUUID()}:tool-1`,
+          resolverPolicy: "human_only",
+          payload: {
+            version: 1,
+            prompt: "Claude Code wants to run Bash",
+            detailsMarkdown: "```\ncat .env\n```",
+            claudePermission: {
+              version: 1,
+              fingerprint: "fp",
+              toolCallId: "tool-1",
+              toolName: "Bash",
+              title: "cat .env",
+              kind: "execute",
+              inputPreview: "cat .env",
+              options: [],
+              alwaysAvailable: false,
+              runId: randomUUID(),
+              agentId: fixture.agentId,
+            },
+          },
+        },
+        { agentId: fixture.agentId },
+        { supersedePendingSiblingInteractions: false },
+      );
+
+      await expect(
+        publicationsForInteraction(fixture.companyId, interaction.id),
+      ).resolves.toEqual([]);
+    });
+
     it("settles a card when the dispatcher claims it between the read and cancellation CAS", async () => {
       const fixture = await seedBoundIssue(["slack"]);
       const service = issueThreadInteractionService(db);

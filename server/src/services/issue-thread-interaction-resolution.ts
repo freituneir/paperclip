@@ -20,6 +20,22 @@ export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "review_policy_denied",
 ] as const;
 
+/**
+ * A request_confirmation bound to server-owned governed metadata: a gateway
+ * tool action, a secret proposal, or a Claude Code permission request. These
+ * are always human-only, regardless of the stored resolver policy.
+ */
+export function isGovernedConfirmationPayload(kind: string | null | undefined, payload: unknown): boolean {
+  if (kind !== "request_confirmation") return false;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  return (
+    record.toolAction !== undefined ||
+    record.secretProposal !== undefined ||
+    record.claudePermission !== undefined
+  );
+}
+
 export type IssueThreadInteractionResolutionDenialCode =
   (typeof ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES)[number];
 
