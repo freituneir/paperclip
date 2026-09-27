@@ -979,3 +979,13 @@ export * from "./app-definition.js";
 export * from "./chat-channels.js";
 
 export * from "./email.js";
+
+export {
+  CLAUDE_HOME_MCP_SERVER_NAME_PATTERN,
+  claudeHomeSettingsUpdateSchema,
+  claudeHomeClaudeMdUpdateSchema,
+  claudeHomeMcpServerUpsertSchema,
+  type ClaudeHomeSettingsUpdate,
+  type ClaudeHomeClaudeMdUpdate,
+  type ClaudeHomeMcpServerUpsert,
+} from "./claude-home.js";

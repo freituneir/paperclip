@@ -2632,6 +2632,15 @@ export {
   type MoveFolderItem,
   type EnsureMySkillFolder,
 } from "./validators/folder.js";
+export {
+  CLAUDE_HOME_MCP_SERVER_NAME_PATTERN,
+  claudeHomeSettingsUpdateSchema,
+  claudeHomeClaudeMdUpdateSchema,
+  claudeHomeMcpServerUpsertSchema,
+  type ClaudeHomeSettingsUpdate,
+  type ClaudeHomeClaudeMdUpdate,
+  type ClaudeHomeMcpServerUpsert,
+} from "./validators/claude-home.js";
 
 export {
   environmentCustomImageTemplateKindSchema,

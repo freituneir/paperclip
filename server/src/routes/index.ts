@@ -2,6 +2,7 @@ export { healthRoutes } from "./health.js";
 export { companyRoutes } from "./companies.js";
 export { companySkillRoutes } from "./company-skills.js";
 export { companySkillPolicyRoutes } from "./company-skill-policy.js";
+export { claudeHomeRoutes } from "./claude-home.js";
 export { inboxAgentPolicyRoutes } from "./inbox-agent-policy.js";
 export { builtInAgentRoutes } from "./built-in-agents.js";
 export { folderRoutes } from "./folders.js";
