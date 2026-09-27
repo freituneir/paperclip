@@ -1,3 +1,12 @@
+import {
+  formatSubagentLabel,
+  parseSubagentCall,
+  parseTodoListInput,
+  summarizeTodoProgress,
+  type SubagentCall,
+  type TodoItem,
+} from "./tool-input-shapes";
+
 type TranscriptDensity = "comfortable" | "compact";
 
 type TranscriptActivity = {
@@ -117,7 +126,27 @@ export function isCommandTool(name: string, input: unknown): boolean {
   return Boolean(record && (typeof record.command === "string" || typeof record.cmd === "string"));
 }
 
+/**
+ * Well-known tool input shapes the transcript renders specially: a TodoWrite
+ * plan (checklist + "1/3 done · …" progress) or a subagent spawn ("Subagent ·
+ * Explore — description"). Keyed off the payload, never adapter identity.
+ */
+export type ToolCallShape =
+  | { kind: "todos"; todos: TodoItem[]; progress: string }
+  | { kind: "subagent"; call: SubagentCall; label: string };
+
+export function readToolCallShape(name: string | null | undefined, input: unknown): ToolCallShape | null {
+  const todos = parseTodoListInput(input);
+  if (todos) return { kind: "todos", todos, progress: summarizeTodoProgress(todos) };
+  const call = parseSubagentCall(name, input);
+  if (call) return { kind: "subagent", call, label: formatSubagentLabel(call) };
+  return null;
+}
+
 export function displayToolName(name: string, input: unknown): string {
+  const shape = readToolCallShape(name, input);
+  if (shape?.kind === "subagent") return shape.label;
+  if (shape?.kind === "todos") return "Todo list";
   if (isCommandTool(name, input)) return "Executing command";
   return humanizeLabel(name);
 }
@@ -128,6 +157,8 @@ export function summarizeToolInput(
   density: TranscriptDensity = "comfortable",
 ): string {
   const compactMax = density === "compact" ? 72 : 120;
+  const shape = readToolCallShape(name, input);
+  if (shape) return truncate(shape.kind === "todos" ? shape.progress : shape.label, compactMax);
   if (typeof input === "string") {
     const normalized = isCommandTool(name, input) ? stripWrappedShell(input) : compactWhitespace(input);
     return truncate(normalized, compactMax);
@@ -184,6 +215,8 @@ function readToolDetailValue(value: unknown, max = 200): string | null {
 }
 
 export function describeToolInput(name: string, input: unknown): ToolInputDetail[] {
+  const shape = readToolCallShape(name, input);
+  if (shape?.kind === "todos") return [{ label: "Progress", value: shape.progress }];
   if (typeof input === "string") {
     const summary = compactWhitespace(isCommandTool(name, input) ? stripWrappedShell(input) : input);
     return summary ? [{ label: isCommandTool(name, input) ? "Command" : "Input", value: truncate(summary, 200), tone: "code" }] : [];
@@ -202,10 +235,14 @@ export function describeToolInput(name: string, input: unknown): ToolInputDetail
     details.push({ label, value, tone });
   };
 
-  pushDetail(
-    "Intent",
-    summarizeRecord(record, ["description", "summary", "reason", "goal", "intent", "action", "task"]) ?? null,
-  );
+  // A subagent's description already lives in its label (the row title), so
+  // it is not repeated as the row's Intent.
+  if (shape?.kind !== "subagent") {
+    pushDetail(
+      "Intent",
+      summarizeRecord(record, ["description", "summary", "reason", "goal", "intent", "action", "task"]) ?? null,
+    );
+  }
   pushDetail("Path", readToolDetailValue(record.path) ?? readToolDetailValue(record.filePath) ?? readToolDetailValue(record.file_path));
   pushDetail("Directory", readToolDetailValue(record.cwd));
   pushDetail("Query", readToolDetailValue(record.query));

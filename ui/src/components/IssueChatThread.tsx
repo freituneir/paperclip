@@ -200,9 +200,11 @@ import {
   formatToolPayload,
   isCommandTool,
   parseToolPayload,
+  readToolCallShape,
   summarizeToolInput,
   summarizeToolResult,
 } from "../lib/transcriptPresentation";
+import { TodoChecklist } from "./task-chat/TodoChecklist";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
@@ -1190,6 +1192,9 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
 }
 
 function cleanToolDisplayText(tool: ToolCallMessagePart): string {
+  const shape = readToolCallShape(tool.toolName, tool.args);
+  if (shape?.kind === "subagent") return shape.label;
+  if (shape?.kind === "todos") return `Todo list ${shape.progress}`;
   const name = displayToolName(tool.toolName, tool.args);
   if (isCommandTool(tool.toolName, tool.args)) return name;
   const summary =
@@ -1503,37 +1508,50 @@ function IssueChatRollingToolPart({
 
   const ToolIcon = getToolIcon(latest.toolName);
   const isRunning = latest.result === undefined;
+  // The newest TodoWrite plan stays visible under the ticker while the agent
+  // works, so a live card shows its checklist rather than one fleeting line.
+  const latestTodos = useMemo(() => {
+    for (let index = toolParts.length - 1; index >= 0; index -= 1) {
+      const tool = toolParts[index]!;
+      const shape = readToolCallShape(tool.toolName, tool.args ?? tool.argsText);
+      if (shape?.kind === "todos") return shape.todos;
+    }
+    return null;
+  }, [toolParts]);
 
   return (
-    <div className="flex gap-2 px-1">
-      <div className="flex flex-col items-center pt-0.5">
-        {isRunning ? (
-          <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground/50" />
-        ) : (
-          <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
-        )}
-      </div>
-      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
-        {ticker.exiting !== null && (
-          <span
-            key={`out-${ticker.key}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70"
-            onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
-          >
-            {ticker.exiting}
-          </span>
-        )}
-        <span
-          key={`in-${ticker.key}`}
-          className={cn(
-            "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70",
-            ticker.key > 0 && "cot-line-enter",
+    <>
+      <div className="flex gap-2 px-1">
+        <div className="flex flex-col items-center pt-0.5">
+          {isRunning ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground/50" />
+          ) : (
+            <ToolIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50" />
           )}
-        >
-          {ticker.current}
-        </span>
+        </div>
+        <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
+          {ticker.exiting !== null && (
+            <span
+              key={`out-${ticker.key}`}
+              className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70"
+              onAnimationEnd={() => setTicker((t) => ({ ...t, exiting: null }))}
+            >
+              {ticker.exiting}
+            </span>
+          )}
+          <span
+            key={`in-${ticker.key}`}
+            className={cn(
+              "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground/70",
+              ticker.key > 0 && "cot-line-enter",
+            )}
+          >
+            {ticker.current}
+          </span>
+        </div>
       </div>
-    </div>
+      {latestTodos ? <TodoChecklist todos={latestTodos} className="pl-6 pr-1" /> : null}
+    </>
   );
 }
 
@@ -1626,14 +1644,21 @@ function IssueChatToolPart({
       : result === undefined
         ? ""
         : formatToolPayload(result);
-  const inputDetails = describeToolInput(toolName, parsedArgs);
+  const shape = readToolCallShape(toolName, parsedArgs);
+  const todos = shape?.kind === "todos" ? shape.todos : null;
+  // A todo plan renders as its checklist; the Progress detail would repeat it.
+  const inputDetails = todos ? [] : describeToolInput(toolName, parsedArgs);
   const displayName = displayToolName(toolName, parsedArgs);
   const isCommand = isCommandTool(toolName, parsedArgs);
-  const summary = isCommand
-    ? null
-    : result === undefined
-      ? summarizeToolInput(toolName, parsedArgs)
-      : summarizeToolResult(resultText, false);
+  const summary = shape?.kind === "todos"
+    ? shape.progress
+    : shape?.kind === "subagent" && result === undefined
+      ? null
+      : isCommand
+        ? null
+        : result === undefined
+          ? summarizeToolInput(toolName, parsedArgs)
+          : summarizeToolResult(resultText, false);
   const ToolIcon = getToolIcon(toolName);
 
   const intentDetail = inputDetails.find((d) => d.label === "Intent");
@@ -1670,6 +1695,8 @@ function IssueChatToolPart({
           />
         </button>
 
+        {todos ? <TodoChecklist todos={todos} className="mt-1 pb-1" /> : null}
+
         {open ? (
           <div className="mt-1 space-y-2 pb-1">
             {nonIntentDetails.length > 0 ? (
@@ -1696,7 +1723,7 @@ function IssueChatToolPart({
                   ))}
                 </dl>
               </div>
-            ) : rawArgsText ? (
+            ) : rawArgsText && !todos ? (
               <div>
                 <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
                   Input

@@ -74,7 +74,7 @@ function parseJsonObjectForWrite(raw: string | null, label: string): Record<stri
 // in updateJsonObjectFile covers.
 const companyLocks = new Map<string, Promise<void>>();
 
-async function withCompanyLock<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
+export async function withCompanyLock<T>(companyId: string, fn: () => Promise<T>): Promise<T> {
   const previous = companyLocks.get(companyId) ?? Promise.resolve();
   let release!: () => void;
   const current = new Promise<void>((resolve) => {

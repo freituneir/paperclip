@@ -4515,6 +4515,163 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("renders TodoWrite as a checklist and labels subagent calls in the dashboard run renderer", () => {
+    const todoInput = {
+      todos: [
+        { content: "Read the plan", status: "completed" },
+        { content: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+        { content: "Ship it", status: "pending" },
+      ],
+    };
+    const transcript = [
+      {
+        kind: "tool_call" as const,
+        ts: "2026-04-06T12:00:05.000Z",
+        name: "Task",
+        toolUseId: "tool-agent",
+        input: { subagent_type: "Explore", description: "Map adapter", prompt: "Find the registry" },
+      },
+      {
+        kind: "tool_result" as const,
+        ts: "2026-04-06T12:00:08.000Z",
+        toolUseId: "tool-agent",
+        toolName: "Task",
+        content: "Found it",
+        isError: false,
+      },
+      {
+        kind: "tool_call" as const,
+        ts: "2026-04-06T12:00:10.000Z",
+        name: "TodoWrite",
+        toolUseId: "tool-todo",
+        input: todoInput,
+      },
+    ];
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[
+              {
+                runId: "run-1",
+                status: "succeeded",
+                agentId: "agent-1",
+                agentName: "Agent 1",
+                createdAt: "2026-04-06T12:00:00.000Z",
+                startedAt: "2026-04-06T12:00:00.000Z",
+                finishedAt: "2026-04-06T12:01:00.000Z",
+              },
+            ]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            variant="embedded"
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={new Map([["run-1", transcript]])}
+            hasOutputForRun={(runId) => runId === "run-1"}
+            includeSucceededRunsWithoutOutput
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const clickButton = (label: string) => {
+      const button = [...container.querySelectorAll("button")].find((candidate) =>
+        candidate.textContent?.includes(label),
+      );
+      expect(button, label).toBeDefined();
+      act(() => {
+        button!.click();
+      });
+    };
+    // Unfold the finished run, then open its chain of thought.
+    clickButton("worked for");
+    clickButton("Worked");
+
+    expect(container.textContent).toContain("Subagent · Explore — Map adapter");
+    expect(container.textContent).toContain("1/3 done · Writing tests");
+    expect(container.textContent).not.toContain("todos payload");
+    const checklist = container.querySelector('[data-testid="todo-checklist"]');
+    expect(checklist).not.toBeNull();
+    expect(
+      [...checklist!.querySelectorAll("li")].map((item) => item.getAttribute("data-todo-status")),
+    ).toEqual(["completed", "in_progress", "pending"]);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the latest TodoWrite checklist under the live tool ticker", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[
+              {
+                id: "run-1",
+                issueId: "issue-1",
+                status: "running",
+                invocationSource: "comment",
+                triggerDetail: null,
+                startedAt: "2026-04-06T12:00:00.000Z",
+                finishedAt: null,
+                createdAt: "2026-04-06T12:00:00.000Z",
+                agentId: "agent-1",
+                agentName: "Agent 1",
+                adapterType: "claude_local",
+              },
+            ]}
+            transcriptsByRunId={
+              new Map([
+                [
+                  "run-1",
+                  [
+                    {
+                      kind: "tool_call",
+                      ts: "2026-04-06T12:00:10.000Z",
+                      name: "TodoWrite",
+                      toolUseId: "tool-todo",
+                      input: { todos: [{ content: "Write tests", status: "in_progress" }, { content: "Ship", status: "pending" }] },
+                    },
+                    {
+                      kind: "tool_call",
+                      ts: "2026-04-06T12:00:12.000Z",
+                      name: "Agent",
+                      toolUseId: "tool-agent",
+                      input: { subagent_type: "Explore", description: "Map adapter" },
+                    },
+                  ],
+                ],
+              ])
+            }
+            onAdd={async () => {}}
+            showComposer={false}
+            variant="embedded"
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Subagent · Explore — Map adapter");
+    expect(container.querySelector('[data-testid="todo-checklist"]')?.textContent).toContain("Write tests");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("renders ephemeral active-run status below the working indicator", () => {
     const root = createRoot(container);
 

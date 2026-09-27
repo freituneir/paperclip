@@ -710,6 +710,14 @@ export const queryKeys = {
   },
   /** The company's shared Claude Code config (CLAUDE_CONFIG_DIR) inventory. */
   claudeHome: (companyId: string) => ["claude-home", companyId] as const,
+  /** Terminal-parity views of Claude Home driven by the real `claude` CLI. */
+  claudeCli: {
+    mcp: (companyId: string) => ["claude-cli", companyId, "mcp"] as const,
+    plugins: (companyId: string) => ["claude-cli", companyId, "plugins"] as const,
+    marketplaces: (companyId: string) => ["claude-cli", companyId, "marketplaces"] as const,
+    pluginDetails: (companyId: string, pluginId: string) =>
+      ["claude-cli", companyId, "plugins", pluginId, "details"] as const,
+  },
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,

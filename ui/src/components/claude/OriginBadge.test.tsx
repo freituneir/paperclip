@@ -8,6 +8,14 @@ describe("OriginBadge", () => {
     expect(originLabel("claude_home")).toBe("Claude Code");
     expect(originLabel("plugin")).toBe("Claude Code · plugin");
     expect(originLabel("project")).toBe("Claude Code · project");
+    expect(originLabel("claude_ai")).toBe("Claude Code · claude.ai");
+  });
+
+  it("marks claude.ai connectors as native, not governed", () => {
+    const html = renderToStaticMarkup(<OriginBadge origin="claude_ai" />);
+    expect(html).toContain("Claude Code · claude.ai");
+    expect(html).toContain("not governed by Paperclip approvals");
+    expect(html).toContain('data-origin="claude_ai"');
   });
 
   it("explains in the title that native capabilities skip Paperclip approvals", () => {

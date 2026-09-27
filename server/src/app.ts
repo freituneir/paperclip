@@ -44,6 +44,7 @@ import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
 import { claudeHomeRoutes } from "./routes/claude-home.js";
+import { claudeCliRoutes } from "./routes/claude-cli.js";
 import { inboxAgentPolicyRoutes } from "./routes/inbox-agent-policy.js";
 import { builtInAgentRoutes } from "./routes/built-in-agents.js";
 import { folderRoutes } from "./routes/folders.js";
@@ -643,6 +644,7 @@ export async function createApp(
   api.use(companySkillRoutes(db));
   api.use(companySkillPolicyRoutes(db));
   api.use(claudeHomeRoutes(db));
+  api.use(claudeCliRoutes(db));
   api.use(inboxAgentPolicyRoutes(db));
   api.use(builtInAgentRoutes(db));
   api.use(summarySlotRoutes(db));

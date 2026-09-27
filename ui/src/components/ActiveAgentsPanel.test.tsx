@@ -12,6 +12,9 @@ const mockHeartbeatsApi = vi.hoisted(() => ({
 
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
+  listInteractions: vi.fn(),
+  acceptInteraction: vi.fn(),
+  rejectInteraction: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -65,6 +68,11 @@ async function waitForMicrotaskAssertion(assertion: () => void, attempts = 20) {
   throw lastError;
 }
 
+function withQueryClient(node: ReactNode) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
+}
+
 function createRun(index: number) {
   return {
     id: `run-${index}`,
@@ -112,6 +120,39 @@ function createIssue(id: string, identifier: string, title: string) {
   };
 }
 
+function createPermissionInteraction(id: string, status: string, agentId: string) {
+  return {
+    id,
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "request_confirmation",
+    status,
+    continuationPolicy: "wake_assignee",
+    createdAt: "2026-04-24T12:00:00.000Z",
+    updatedAt: "2026-04-24T12:00:00.000Z",
+    payload: {
+      version: 1,
+      prompt: "Claude Code wants to run Bash",
+      claudePermission: {
+        fingerprint: "fp-1",
+        toolName: "Bash",
+        title: "Run tests",
+        kind: "execute",
+        inputPreview: "pnpm test",
+        options: [
+          { optionId: "allow", name: "Allow", kind: "allow_once" },
+          { optionId: "always", name: "Always", kind: "allow_always" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+        alwaysAvailable: true,
+        runId: "run-1",
+        agentId,
+      },
+    },
+    result: null,
+  };
+}
+
 describe("ActiveAgentsPanel", () => {
   let container: HTMLDivElement;
 
@@ -120,6 +161,7 @@ describe("ActiveAgentsPanel", () => {
     document.body.appendChild(container);
     mockHeartbeatsApi.liveRunsForCompany.mockResolvedValue([1, 2, 3, 4, 5].map(createRun));
     mockIssuesApi.get.mockRejectedValue(new Error("Issue not found"));
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -273,14 +315,14 @@ describe("ActiveAgentsPanel", () => {
     const root = createRoot(container);
     const statuses = ["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"];
     await act(async () => {
-      root.render(<>{statuses.map((status, index) => (
+      root.render(withQueryClient(<>{statuses.map((status, index) => (
         <AgentRunCard
           key={status}
           companyId="company-1"
           run={{ ...createIssueRun(index, "issue-1"), status }}
           issue={{ title: "Review release notes", identifier: "PAP-559", status: "in_review" }}
         />
-      ))}</>);
+      ))}</>));
     });
     const headers = [...container.querySelectorAll('a[aria-label$=". View run"]')];
     expect(headers.map((header) => header.getAttribute("aria-label"))).toEqual([
@@ -301,7 +343,7 @@ describe("ActiveAgentsPanel", () => {
   it("keeps a failed task lookup navigable and shows a clear error", async () => {
     const root = createRoot(container);
     await act(async () => {
-      root.render(<AgentRunCard companyId="company-1" run={createIssueRun(1, "issue-missing")} issueLoadFailed />);
+      root.render(withQueryClient(<AgentRunCard companyId="company-1" run={createIssueRun(1, "issue-missing")} issueLoadFailed />));
     });
     expect(container.textContent).toContain("Task unavailable");
     expect(container.querySelector('a[href="/issues/issue-missing"]')).not.toBeNull();
@@ -311,7 +353,7 @@ describe("ActiveAgentsPanel", () => {
   it("does not animate running records while execution is reconnecting", async () => {
     const root = createRoot(container);
     await act(async () => {
-      root.render(<AgentRunCard
+      root.render(withQueryClient(<AgentRunCard
         companyId="company-1"
         run={{
           ...createRun(0),
@@ -322,11 +364,80 @@ describe("ActiveAgentsPanel", () => {
             predecessorRunId: null, successorRunId: null,
           },
         }}
-      />);
+      />));
     });
     expect(container.querySelector('a[aria-label="Agent 0 — Running. View run"]')).not.toBeNull();
     expect(container.querySelector(".status-chip")).toBeNull();
     expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
+    await act(async () => root.unmount());
+  });
+  it("shows Waiting for you with the permission card when the live run's task has a pending Claude permission", async () => {
+    const run = { ...createIssueRun(1, "issue-1"), agentId: "agent-a", agentName: "Builder" };
+    const interaction = createPermissionInteraction("interaction-1", "pending", "agent-a");
+    mockIssuesApi.listInteractions.mockResolvedValue([interaction]);
+    mockIssuesApi.acceptInteraction.mockResolvedValue({ ...interaction, status: "accepted" });
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(withQueryClient(
+        <AgentRunCard
+          companyId="company-1"
+          run={run}
+          issue={{ title: "Ship it", identifier: "PAP-1", status: "in_progress" }}
+        />,
+      ));
+    });
+
+    await waitForMicrotaskAssertion(() => {
+      expect(container.querySelector('[data-testid="agent-card-waiting-for-you"]')?.textContent).toBe("Waiting for you");
+      expect(container.querySelector('[data-testid="claude-permission-card"]')).not.toBeNull();
+    });
+    expect(mockIssuesApi.listInteractions).toHaveBeenCalledWith("issue-1");
+    expect(container.querySelector('[data-waiting-for-you="true"]')).not.toBeNull();
+    expect(container.textContent).toContain("Bash");
+
+    const allow = [...container.querySelectorAll("button")].find((button) => button.textContent === "Always allow");
+    expect(allow).toBeDefined();
+    await act(async () => {
+      allow!.click();
+    });
+    await waitForMicrotaskAssertion(() => {
+      expect(mockIssuesApi.acceptInteraction).toHaveBeenCalledWith("issue-1", "interaction-1", { rememberAction: true });
+    });
+
+    await act(async () => root.unmount());
+  });
+
+  it("renders nothing extra when the task has no pending Claude permission", async () => {
+    mockIssuesApi.listInteractions.mockResolvedValue([
+      createPermissionInteraction("interaction-done", "accepted", "agent-a"),
+      createPermissionInteraction("interaction-other-agent", "pending", "agent-z"),
+      { ...createPermissionInteraction("interaction-plain", "pending", "agent-a"), payload: { version: 1, prompt: "Ok?" } },
+    ]);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(withQueryClient(
+        <AgentRunCard companyId="company-1" run={{ ...createIssueRun(1, "issue-1"), agentId: "agent-a" }} />,
+      ));
+    });
+    await waitForMicrotaskAssertion(() => {
+      expect(mockIssuesApi.listInteractions).toHaveBeenCalledWith("issue-1");
+    });
+    await flushReact();
+    expect(container.querySelector('[data-testid="agent-card-waiting-for-you"]')).toBeNull();
+    expect(container.querySelector('[data-testid="claude-permission-card"]')).toBeNull();
+    expect(container.querySelector("[data-waiting-for-you]")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("does not read task interactions for finished runs", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(withQueryClient(
+        <AgentRunCard companyId="company-1" run={{ ...createIssueRun(1, "issue-1"), status: "succeeded" }} />,
+      ));
+    });
+    await flushReact();
+    expect(mockIssuesApi.listInteractions).not.toHaveBeenCalled();
     await act(async () => root.unmount());
   });
 });

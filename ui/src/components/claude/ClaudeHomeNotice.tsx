@@ -6,18 +6,34 @@ import { Link } from "@/lib/router";
 
 /**
  * Apps page notice: native Claude Code MCP servers live in the company Claude
- * Home and bypass Paperclip approvals. Renders nothing when there are none, and
- * nothing when the inventory can't be read (for example without board access),
- * so it never breaks the page it sits on.
+ * Home and bypass Paperclip approvals. Counts what `claude mcp list` reports
+ * (plugin servers and claude.ai connectors included) and falls back to the
+ * file-based inventory when the CLI isn't available. Renders nothing when there
+ * are none, and nothing when neither can be read (for example without board
+ * access), so it never breaks the page it sits on.
  */
 export function ClaudeHomeNotice({ companyId }: { companyId: string }) {
+  const mcpQuery = useQuery({
+    queryKey: queryKeys.claudeCli.mcp(companyId),
+    queryFn: () => claudeHomeApi.listMcp(companyId),
+    retry: false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+  const useCli = mcpQuery.isSuccess && mcpQuery.data.cliAvailable !== false;
   const inventoryQuery = useQuery({
     queryKey: queryKeys.claudeHome(companyId),
     queryFn: () => claudeHomeApi.get(companyId),
     retry: false,
+    enabled: mcpQuery.isError || (mcpQuery.isSuccess && !useCli),
   });
-  const count = inventoryQuery.data?.mcpServers.length ?? 0;
-  if (inventoryQuery.isError || count === 0) return null;
+
+  const count = useCli
+    ? mcpQuery.data?.servers.length ?? 0
+    : inventoryQuery.isError
+      ? 0
+      : inventoryQuery.data?.mcpServers.length ?? 0;
+  if (count === 0) return null;
 
   return (
     <div

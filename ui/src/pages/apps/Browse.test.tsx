@@ -19,7 +19,8 @@ const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 const experimentalMock = vi.hoisted(() => vi.fn());
 const chatListMock = vi.hoisted(() => vi.fn());
 const getClaudeHomeMock = vi.hoisted(() => vi.fn());
-vi.mock("@/api/claudeHome", () => ({ claudeHomeApi: { get: getClaudeHomeMock } }));
+const listClaudeMcpMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/claudeHome", () => ({ claudeHomeApi: { get: getClaudeHomeMock, listMcp: listClaudeMcpMock } }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: experimentalMock } }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: chatListMock } }));
 
@@ -137,6 +138,7 @@ describe("Connectors landing page", () => {
 
   beforeEach(() => {
     getClaudeHomeMock.mockResolvedValue({ mcpServers: [] });
+    listClaudeMcpMock.mockResolvedValue({ servers: [], cliAvailable: false });
     experimentalMock.mockResolvedValue({ enableChatConnectors: true });
     chatListMock.mockResolvedValue([]);
     listGalleryMock.mockResolvedValue({
@@ -218,8 +220,25 @@ describe("Connectors landing page", () => {
       expect(notice?.querySelector('a[href="/claude-home"]')).not.toBeNull();
     });
 
+    it("counts every server the Claude Code CLI reports when it is available", async () => {
+      listClaudeMcpMock.mockResolvedValue({
+        cliAvailable: true,
+        servers: [
+          { name: "linear", origin: "claude_home" },
+          { name: "plugin:x:y", origin: "plugin" },
+          { name: "claude.ai Gmail", origin: "claude_ai" },
+        ],
+      });
+      await renderBrowse();
+      expect(container.querySelector('[data-testid="claude-home-notice"]')?.textContent).toContain(
+        "3 MCP servers are also configured natively in Claude Code.",
+      );
+      expect(getClaudeHomeMock).not.toHaveBeenCalled();
+    });
+
     it("stays hidden without failing the page when the inventory can't be read", async () => {
       getClaudeHomeMock.mockRejectedValue(new Error("Board access required"));
+      listClaudeMcpMock.mockRejectedValue(new Error("Board access required"));
       await renderBrowse();
       expect(container.querySelector('[data-testid="claude-home-notice"]')).toBeNull();
       expect(container.querySelector('[role="alert"]')).toBeNull();
