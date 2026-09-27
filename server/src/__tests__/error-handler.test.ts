@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { HttpError, ToolGatewayHttpError } from "../errors.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 const recordResponsibleUserDenialOnActiveRunMock = vi.hoisted(() => vi.fn());
@@ -105,6 +105,29 @@ describe("errorHandler", () => {
       message: "portable file references missing upload id",
     });
     expect(res.err).toBe(err);
+  });
+
+  it("returns tool-gateway refusals with their real status and reason code", () => {
+    const req = makeReq();
+    const res = makeRes() as any;
+    const next = vi.fn() as unknown as NextFunction;
+    const err = new ToolGatewayHttpError(
+      409,
+      "Tool action request requires formal board approval before execution",
+      "formal_approval_required",
+      { approvalId: "approval-1" },
+    );
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Tool action request requires formal board approval before execution",
+      code: "formal_approval_required",
+      details: { approvalId: "approval-1" },
+    });
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
   });
 
   it("attaches HttpError instances for 500 responses", () => {

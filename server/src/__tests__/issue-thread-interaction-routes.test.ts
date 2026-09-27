@@ -1235,6 +1235,52 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("returns 409 with a reason code when a destructive tool action still needs formal approval", async () => {
+    const approveToolActionRequest = vi.fn();
+    mockInteractionService.acceptInteraction.mockResolvedValueOnce({
+      interaction: {
+        id: "interaction-tool-action",
+        companyId: "company-1",
+        issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        kind: "request_confirmation",
+        status: "accepted",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Approve the action?",
+          toolAction: {
+            version: 1,
+            actionRequestId: "action-request-1",
+            toolName: "manage_event",
+          },
+        },
+        result: { version: 1, outcome: "accepted" },
+      },
+      createdIssues: [],
+    });
+    const app = await createApp(undefined, { approveToolActionRequest });
+    // Same module instance the error handler sees (modules are reset per test).
+    const { ToolGatewayHttpError } = await import("../errors.js");
+    approveToolActionRequest.mockRejectedValueOnce(
+      new ToolGatewayHttpError(
+        409,
+        "Tool action request requires formal board approval before execution",
+        "formal_approval_required",
+        { approvalId: "approval-1" },
+      ),
+    );
+
+    const res = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-tool-action/accept")
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({
+      code: "formal_approval_required",
+      details: { approvalId: "approval-1" },
+    });
+  });
+
   it("wakes with failure instructions after an accepted tool action fails", async () => {
     const approveToolActionRequest = vi.fn().mockResolvedValue({
       status: "failed",

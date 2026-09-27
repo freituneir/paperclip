@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import type { Db } from "@paperclipai/db";
 import { ZodError } from "zod";
-import { HttpError } from "../errors.js";
+import { HttpError, ToolGatewayHttpError } from "../errors.js";
 import { trackErrorHandlerCrash } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { captureException } from "../sentry.js";
@@ -188,7 +188,9 @@ export function errorHandler(
             error: sanitizeSecretSensitiveResponse(req, err.message),
             ...(typeof responseDetails?.code === "string"
               ? { code: responseDetails.code }
-              : {}),
+              : err instanceof ToolGatewayHttpError
+                ? { code: err.reasonCode }
+                : {}),
             ...(redactedSkillPolicyDenial &&
             typeof responseDetails?.reason === "string"
               ? { reason: responseDetails.reason }

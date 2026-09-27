@@ -2,6 +2,7 @@ import { runIdentityContexts } from "@paperclipai/db";
 import { captureRunIdentity } from "./run-identity.js";
 import { resolveManagedGitHubIdentitySelection } from "./git-credentials.js";
 import { logger } from "../middleware/logger.js";
+import { ToolGatewayHttpError } from "../errors.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
@@ -300,16 +301,8 @@ export interface ToolGatewaySession {
 
 export type ToolGatewayRuntimeSlot = ToolRuntimeSlotView;
 
-export class ToolGatewayHttpError extends Error {
-  constructor(
-    public readonly status: number,
-    message: string,
-    public readonly reasonCode: string,
-    public readonly details: Record<string, unknown> = {},
-  ) {
-    super(message);
-  }
-}
+// Lives in errors.ts (as an HttpError subclass) so the global error handler maps it.
+export { ToolGatewayHttpError };
 
 interface ExecuteGatewayToolInput {
   sessionToken: string;
