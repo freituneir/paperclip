@@ -356,6 +356,25 @@ describe("claude home routes", () => {
       expect((await readServers()).linear.url).toBe("https://mcp.linear.app/mcp");
     });
 
+    it("treats an untyped url server and padded args as the same destination", async () => {
+      await seed({
+        linear: { url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } },
+        local: { command: "npx", args: [" -y ", "", "good"], env: { KEY: "secret" } },
+      });
+      const app = await createApp();
+      const http = await request(app)
+        .put(`${base}/linear`)
+        .send({ config: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "__redacted__" } } });
+      expect(http.status).toBe(200);
+      const stdio = await request(app)
+        .put(`${base}/local`)
+        .send({ config: { type: "stdio", command: "npx", args: ["-y", "good"], env: { KEY: "__redacted__" } } });
+      expect(stdio.status).toBe(200);
+      const servers = await readServers();
+      expect(servers.linear.headers.Authorization).toBe("Bearer secret");
+      expect(servers.local.env.KEY).toBe("secret");
+    });
+
     it("rejects a kept redacted header when the type changes", async () => {
       await seed({ linear: { type: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer secret" } } });
       const app = await createApp();

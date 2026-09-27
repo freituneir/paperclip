@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AdapterExecutionContext, AdapterInvocationMeta } from "@paperclipai/adapter-utils";
 import type { ClaudeLaunchManifest } from "@paperclipai/shared";
 import { buildInvocationEnvForLogs, redactEnvForLogs } from "@paperclipai/adapter-utils/server-utils";
-import { buildClaudeAcpConfig, createClaudeAcpExecutor, PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV } from "./acp.js";
+import { acpRootBypassUnavailable, buildClaudeAcpConfig, createClaudeAcpExecutor, PAPERCLIP_CLAUDE_SDK_OPTIONS_ENV } from "./acp.js";
+import { parseClaudeNativeOptions } from "./native-options.js";
 
 const ENV_KEYS = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_CLAUDE_HOME_ROOT", "CLAUDE_CONFIG_DIR"] as const;
 const originalEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
@@ -400,5 +401,15 @@ describe("createClaudeAcpExecutor Claude Home parity", () => {
     const home = homeMeta[0]?.launchManifest as unknown as ClaudeLaunchManifest;
     expect(home.extraArgs).toEqual(["--add-dir", "/a", "/b"]);
     expect(home.warnings.some((warning) => warning.includes('"/b" was ignored'))).toBe(true);
+  });
+});
+
+describe("acpRootBypassUnavailable", () => {
+  const bypass = parseClaudeNativeOptions({ claudePermissionMode: "bypassPermissions" });
+  it("is true only for bypassPermissions as root outside a sandbox", () => {
+    expect(acpRootBypassUnavailable(bypass, 0, {})).toBe(true);
+    expect(acpRootBypassUnavailable(bypass, 0, { IS_SANDBOX: "1" })).toBe(false);
+    expect(acpRootBypassUnavailable(bypass, 1000, {})).toBe(false);
+    expect(acpRootBypassUnavailable(parseClaudeNativeOptions({ claudePermissionMode: "acceptEdits" }), 0, {})).toBe(false);
   });
 });

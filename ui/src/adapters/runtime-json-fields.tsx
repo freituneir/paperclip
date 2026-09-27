@@ -183,10 +183,10 @@ export function JsonObjectConfigField({
   const reportValidity = useContext(JsonDraftValidityContext);
   const invalidEditDraft = !isCreate && error !== null;
 
+  // No reset on unmount: collapsing the section with an invalid draft must keep
+  // Save blocked instead of silently saving the last valid value.
   useEffect(() => {
-    if (!reportValidity) return;
-    reportValidity(configKey, invalidEditDraft);
-    return () => reportValidity(configKey, false);
+    reportValidity?.(configKey, invalidEditDraft);
   }, [reportValidity, configKey, invalidEditDraft]);
 
   return (

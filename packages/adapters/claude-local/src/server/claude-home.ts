@@ -39,6 +39,11 @@ const AUTH_CONFLICT_ENV_KEYS = [
   "HTTPS_PROXY",
   "HTTP_PROXY",
   "NODE_TLS_REJECT_UNAUTHORIZED",
+  "https_proxy",
+  "http_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "ANTHROPIC_FOUNDRY_BASE_URL",
+  "ANTHROPIC_FOUNDRY_API_KEY",
 ] as const;
 
 function nonEmpty(value: string | undefined): string | null {

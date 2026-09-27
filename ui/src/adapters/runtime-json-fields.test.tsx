@@ -49,7 +49,7 @@ function render(report: (key: string, invalid: boolean) => void, isCreate = fals
 }
 
 describe("JsonObjectConfigField validity reporting", () => {
-  it("reports an invalid edit draft to the form and clears it when valid again or unmounted", () => {
+  it("reports an invalid edit draft to the form and clears it only when valid again (unmounting keeps Save blocked)", () => {
     const report = vi.fn();
     const { container, root, mark } = render(report);
     const textarea = container.querySelector("textarea")!;
@@ -66,9 +66,10 @@ describe("JsonObjectConfigField validity reporting", () => {
     act(() => typeInto(textarea, "[1]"));
     expect(report).toHaveBeenLastCalledWith("settingsOverlay", true);
 
+    // Collapsing the section must not unblock Save with a stale value.
     act(() => root.unmount());
     roots.splice(roots.indexOf(root), 1);
-    expect(report).toHaveBeenLastCalledWith("settingsOverlay", false);
+    expect(report).toHaveBeenLastCalledWith("settingsOverlay", true);
   });
 
   it("does not report create-mode drafts (they are validated on submit)", () => {

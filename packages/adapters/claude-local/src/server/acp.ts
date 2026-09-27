@@ -165,6 +165,21 @@ function claudeAcpExtraArgs(config: Record<string, unknown>): string[] {
 }
 
 /**
+ * claude-agent-acp only allows bypassPermissions when it is not root or runs in
+ * a sandbox (its ALLOW_BYPASS). Mirrors the CLI lane's root fallback.
+ */
+export function acpRootBypassUnavailable(
+  native: ClaudeNativeOptions,
+  uid: number | null = process.getuid?.() ?? null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return native.permissionMode === "bypassPermissions" && uid === 0 && !env.IS_SANDBOX;
+}
+
+export const ACP_ROOT_BYPASS_WARNING =
+  "bypassPermissions is unavailable to the ACP engine when Paperclip runs as root outside a sandbox; the ACP default permission mode was used.";
+
+/**
  * The env the patched `claude-agent-acp` reads to mirror the CLI lane's native
  * options: `CLAUDE_CONFIG_DIR` (company Claude Home) and
  * `PAPERCLIP_CLAUDE_SDK_OPTIONS_SECRET_JSON` (Claude Agent SDK options). Local
@@ -180,7 +195,10 @@ function buildClaudeAcpNativeEnv(
   options: ClaudeAcpConfigOptions,
 ): Record<string, string> {
   if (options.remote || !options.companyId) return {};
-  const native = parseClaudeNativeOptions(config);
+  const parsedNative = parseClaudeNativeOptions(config);
+  const native = acpRootBypassUnavailable(parsedNative)
+    ? { ...parsedNative, permissionMode: null }
+    : parsedNative;
   const activation = resolveClaudeHomeActivation({
     native,
     targetIsRemote: false,
@@ -492,6 +510,10 @@ async function buildClaudeAcpLaunchManifest(input: {
   }
   if (extraArgs.length > 0) warnings.push(...parseExtraArgsForSdk(extraArgs).warnings);
   let options: ClaudeNativeOptions = native;
+  if (!targetIsRemote && acpRootBypassUnavailable(native)) {
+    warnings.push(ACP_ROOT_BYPASS_WARNING);
+    options = { ...native, permissionMode: null };
+  }
   if (targetIsRemote) {
     const ignored = [
       native.permissionMode ? "claudePermissionMode" : null,

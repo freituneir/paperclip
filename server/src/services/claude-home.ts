@@ -179,11 +179,16 @@ function containsRedactedValue(value: unknown): boolean {
 function mcpDestination(config: unknown): string {
   const entry = isPlainObject(config) ? config : {};
   const command = asTrimmedString(entry.command);
+  const url = asTrimmedString(entry.url);
+  // Normalise the way the UI form does (untyped url → http, trimmed non-empty
+  // args) so an unchanged destination is not mistaken for a new one.
   return JSON.stringify({
-    transport: asTrimmedString(entry.type) || (command ? "stdio" : ""),
-    url: asTrimmedString(entry.url),
+    transport: asTrimmedString(entry.type) || (command ? "stdio" : url ? "http" : ""),
+    url,
     command,
-    args: Array.isArray(entry.args) ? entry.args : [],
+    args: Array.isArray(entry.args)
+      ? entry.args.map((arg) => (typeof arg === "string" ? arg.trim() : String(arg))).filter(Boolean)
+      : [],
   });
 }
 

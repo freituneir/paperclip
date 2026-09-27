@@ -291,3 +291,25 @@ describe("summarizeMcpServer / readProjectMcpServers", () => {
     ]);
   });
 });
+
+describe("findHomeAuthConflicts extra transport keys", () => {
+  it("flags lowercase proxies, extra CA certs and Foundry routing", () => {
+    expect(
+      findHomeAuthConflicts({
+        env: {
+          https_proxy: "http://p",
+          http_proxy: "http://p",
+          NODE_EXTRA_CA_CERTS: "/ca.pem",
+          ANTHROPIC_FOUNDRY_BASE_URL: "https://f",
+          ANTHROPIC_FOUNDRY_API_KEY: "k",
+        },
+      }),
+    ).toEqual([
+      "env.https_proxy",
+      "env.http_proxy",
+      "env.NODE_EXTRA_CA_CERTS",
+      "env.ANTHROPIC_FOUNDRY_BASE_URL",
+      "env.ANTHROPIC_FOUNDRY_API_KEY",
+    ]);
+  });
+});
