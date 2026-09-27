@@ -44,7 +44,7 @@ export const help: Record<string, string> = {
   command: "The command to execute (e.g. node, python).",
   localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
   args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
+  extraArgs: "Extra CLI arguments for local adapters, comma-separated. For Claude they apply to both the CLI and ACP engines.",
   envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
   secretAccess:
     "Secrets this agent can reach. Env-var bindings are injected at run start; API-access bindings are fetched on demand via the run-bound agent API and never written to the environment.",

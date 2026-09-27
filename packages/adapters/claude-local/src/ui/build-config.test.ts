@@ -77,4 +77,71 @@ describe("buildClaudeLocalConfig", () => {
       FLAG: { type: "plain", value: "on" },
     });
   });
+
+  it("omits native Claude Code options at their defaults", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        claudeHome: "company",
+        claudeNativeMcp: "enabled",
+        claudePermissionMode: "",
+        claudeFallbackModel: "  ",
+        claudeAllowedTools: " , ",
+        claudeDisallowedTools: "",
+        claudeSettingsOverlayJson: "",
+      }),
+    );
+
+    for (const key of [
+      "claudeHome",
+      "nativeMcp",
+      "claudePermissionMode",
+      "fallbackModel",
+      "allowedTools",
+      "disallowedTools",
+      "settingsOverlay",
+    ]) {
+      expect(config).not.toHaveProperty(key);
+    }
+  });
+
+  it("maps native Claude Code options to adapter config keys", () => {
+    const config = buildClaudeLocalConfig(
+      makeValues({
+        claudeHome: "isolated",
+        claudeNativeMcp: "disabled",
+        claudePermissionMode: "acceptEdits",
+        claudeFallbackModel: " claude-sonnet-5 ",
+        claudeAllowedTools: " Read, Bash(git:*) ,,Edit ",
+        claudeDisallowedTools: "WebFetch",
+        claudeSettingsOverlayJson: '{ "env": { "FOO": "1" } }',
+      }),
+    );
+
+    expect(config).toMatchObject({
+      claudeHome: "isolated",
+      nativeMcp: "disabled",
+      claudePermissionMode: "acceptEdits",
+      fallbackModel: "claude-sonnet-5",
+      allowedTools: ["Read", "Bash(git:*)", "Edit"],
+      disallowedTools: ["WebFetch"],
+      settingsOverlay: { env: { FOO: "1" } },
+    });
+  });
+
+  it("drops a settings overlay that is not a JSON object", () => {
+    expect(buildClaudeLocalConfig(makeValues({ claudeSettingsOverlayJson: "{ nope" }))).not.toHaveProperty(
+      "settingsOverlay",
+    );
+    expect(buildClaudeLocalConfig(makeValues({ claudeSettingsOverlayJson: "[1,2]" }))).not.toHaveProperty(
+      "settingsOverlay",
+    );
+    expect(buildClaudeLocalConfig(makeValues({ claudeSettingsOverlayJson: "{}" }))).not.toHaveProperty(
+      "settingsOverlay",
+    );
+  });
+
+  it("keeps effort levels beyond high", () => {
+    expect(buildClaudeLocalConfig(makeValues({ thinkingEffort: "xhigh" }))).toMatchObject({ effort: "xhigh" });
+    expect(buildClaudeLocalConfig(makeValues({ thinkingEffort: "max" }))).toMatchObject({ effort: "max" });
+  });
 });

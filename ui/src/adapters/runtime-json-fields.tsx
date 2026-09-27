@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AdapterConfigFieldsProps } from "./types";
+import type { AdapterConfigFieldsProps, CreateConfigValues } from "./types";
 import { Field, help } from "../components/agent-config-primitives";
 
 // TODO(issue-worktree-support): re-enable this UI once the workflow is ready to ship.
@@ -117,6 +117,91 @@ export function PayloadTemplateJsonField({
         }}
         placeholder={`{\n  "agentId": "remote-agent-123",\n  "metadata": {\n    "team": "platform"\n  }\n}`}
       />
+    </Field>
+  );
+}
+
+type JsonObjectCreateKey = {
+  [K in keyof CreateConfigValues]-?: NonNullable<CreateConfigValues[K]> extends string ? K : never;
+}[keyof CreateConfigValues];
+
+/** Parse error for a JSON object draft, or null when the draft is empty or valid. */
+export function jsonObjectDraftError(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return "Must be a JSON object.";
+    }
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : "Invalid JSON.";
+  }
+}
+
+/**
+ * A JSON object textarea bound to one adapter config key. Create mode stores the
+ * raw text in `values[createKey]`; edit mode marks the parsed object (or
+ * undefined when empty) and keeps an invalid draft local with a parse error.
+ */
+export function JsonObjectConfigField({
+  isCreate,
+  values,
+  set,
+  config,
+  mark,
+  label,
+  hint,
+  createKey,
+  configKey,
+  placeholder,
+}: JsonFieldProps & {
+  label: string;
+  hint?: string;
+  createKey: JsonObjectCreateKey;
+  configKey: string;
+  placeholder?: string;
+}) {
+  const existing = formatJsonObject(config[configKey]);
+  const [draft, setDraft] = useState(existing);
+
+  useEffect(() => {
+    if (!isCreate) setDraft(existing);
+  }, [existing, isCreate]);
+
+  const value = isCreate ? String(values?.[createKey] ?? "") : draft;
+  const error = jsonObjectDraftError(value);
+
+  return (
+    <Field label={label} hint={hint}>
+      <textarea
+        className={`${inputClass} min-h-32`}
+        value={value}
+        aria-invalid={error ? true : undefined}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (isCreate) {
+            set?.({ [createKey]: next } as Partial<CreateConfigValues>);
+            return;
+          }
+          setDraft(next);
+          const trimmed = next.trim();
+          if (!trimmed) {
+            mark("adapterConfig", configKey, undefined);
+            return;
+          }
+          if (jsonObjectDraftError(trimmed) === null) {
+            mark("adapterConfig", configKey, JSON.parse(trimmed));
+          }
+        }}
+        placeholder={placeholder}
+      />
+      {error && (
+        <p className="mt-1 text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      )}
     </Field>
   );
 }

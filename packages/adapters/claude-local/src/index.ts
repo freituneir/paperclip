@@ -62,7 +62,7 @@ Core fields:
 - maxTurnsPerRun (number, optional): max turns for one run
 - dangerouslySkipPermissions (boolean, optional, default true): allow non-interactive Claude runs to proceed without approval prompts. Local targets receive --dangerously-skip-permissions; remote targets receive a curated --allowedTools list so they do not inherit local bypass permissions.
 - command (string, optional): defaults to "claude"
-- extraArgs (string[], optional): additional CLI args
+- extraArgs (string[], optional): additional Claude args; applied on both engines (CLI flags, or the SDK extraArgs record on ACP)
 - claudeHome (string, optional, default "company"): "company" points Claude at the persistent company Claude Home (CLAUDE_CONFIG_DIR = $PAPERCLIP_CLAUDE_HOME_ROOT/<companyId>, or <instanceRoot>/companies/<companyId>/claude-home) and loads user, project, and local settings, so native MCP servers, plugins, skills, subagents, slash commands, hooks, and sessions persist. "isolated" keeps the legacy per-run behavior. Local execution targets only; an explicit CLAUDE_CONFIG_DIR in env wins.
 - nativeMcp (string, optional, default "enabled"): "disabled" passes --strict-mcp-config so only Paperclip-governed MCP servers load. Native (Claude Home, project .mcp.json, plugin) MCP servers are not governed by Paperclip approvals.
 - claudePermissionMode (string, optional, default ""): bypassPermissions|auto|acceptEdits|dontAsk|plan|manual. When set on a local target it replaces the dangerouslySkipPermissions behavior with --permission-mode. Remote targets keep the curated --allowedTools list.

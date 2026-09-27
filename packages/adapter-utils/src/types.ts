@@ -687,6 +687,19 @@ export interface CreateConfigValues {
   claudeAcpNonInteractivePermissions?: "deny" | "fail";
   claudeAcpStateDir?: string;
   claudeAcpWarmHandleIdleMs?: number;
+  /** claude_local `claudeHome`; omitted means the "company" default. */
+  claudeHome?: "company" | "isolated";
+  /** claude_local `nativeMcp`; omitted means the "enabled" default. */
+  claudeNativeMcp?: "enabled" | "disabled";
+  /** claude_local `claudePermissionMode`; "" keeps the Paperclip default. */
+  claudePermissionMode?: string;
+  claudeFallbackModel?: string;
+  /** Comma-separated tool names, stored as `allowedTools: string[]`. */
+  claudeAllowedTools?: string;
+  /** Comma-separated tool names, stored as `disallowedTools: string[]`. */
+  claudeDisallowedTools?: string;
+  /** JSON object text, stored as `settingsOverlay`. */
+  claudeSettingsOverlayJson?: string;
   codexEngine?: "auto" | "cli" | "acp";
   codexAcpAgentCommand?: string;
   codexAcpMode?: "persistent" | "oneshot";

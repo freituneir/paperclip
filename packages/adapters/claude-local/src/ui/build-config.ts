@@ -59,5 +59,19 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   }
   if (v.command) ac.command = v.command;
   if (v.extraArgs) ac.extraArgs = parseCommaArgs(v.extraArgs);
+  // Native Claude Code options. Defaults ("company" home, native MCP enabled,
+  // Paperclip permission default) are omitted so the runtime default applies.
+  if (v.claudeHome === "isolated") ac.claudeHome = "isolated";
+  if (v.claudeNativeMcp === "disabled") ac.nativeMcp = "disabled";
+  const permissionMode = v.claudePermissionMode?.trim();
+  if (permissionMode) ac.claudePermissionMode = permissionMode;
+  const fallbackModel = v.claudeFallbackModel?.trim();
+  if (fallbackModel) ac.fallbackModel = fallbackModel;
+  const allowedTools = parseCommaArgs(v.claudeAllowedTools ?? "");
+  if (allowedTools.length > 0) ac.allowedTools = allowedTools;
+  const disallowedTools = parseCommaArgs(v.claudeDisallowedTools ?? "");
+  if (disallowedTools.length > 0) ac.disallowedTools = disallowedTools;
+  const settingsOverlay = parseJsonObject(v.claudeSettingsOverlayJson ?? "");
+  if (settingsOverlay && Object.keys(settingsOverlay).length > 0) ac.settingsOverlay = settingsOverlay;
   return ac;
 }

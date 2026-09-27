@@ -1,5 +1,5 @@
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, CLAUDE_EFFORT_LEVELS } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
@@ -287,12 +287,27 @@ const cursorModeOptions = [
   { id: "ask", label: "Ask" },
 ] as const;
 
-const claudeThinkingEffortOptions = [
+const claudeEffortLabels: Record<(typeof CLAUDE_EFFORT_LEVELS)[number], string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "X-High",
+  max: "Max",
+};
+
+// Fallback for adapters without their own effort scale (low/medium/high).
+const defaultThinkingEffortOptions = [
   { id: "", label: "Auto" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
 ] as const;
+
+// Claude Code's --effort accepts two levels beyond high (CLAUDE_EFFORT_LEVELS).
+const claudeThinkingEffortOptions = [
+  { id: "", label: "Auto" },
+  ...CLAUDE_EFFORT_LEVELS.map((id) => ({ id, label: claudeEffortLabels[id] })),
+];
 
 // Kimi exposes low/high/max (no "medium") via each model's support_efforts;
 // the kimi_local adapter maps a legacy "medium" onto "high" at runtime.
@@ -1283,7 +1298,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : claudeThinkingEffortOptions;
+              : adapterType === "claude_local"
+                ? claudeThinkingEffortOptions
+                : defaultThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"

@@ -1,5 +1,5 @@
 import { configFieldsForSection } from "../config-sections";
-import type { AdapterConfigFieldsProps } from "../types";
+import type { AdapterConfigFieldsProps, AdapterConfigSection } from "../types";
 import {
   Field,
   ToggleField,
@@ -9,6 +9,8 @@ import {
 } from "../../components/agent-config-primitives";
 import { ChoosePathButton } from "../../components/PathInstructionsModal";
 import { LocalWorkspaceRuntimeFields } from "../local-workspace-runtime-fields";
+import { JsonObjectConfigField } from "../runtime-json-fields";
+import { CLAUDE_PERMISSION_MODES, type ClaudePermissionMode } from "@paperclipai/shared";
 
 const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
@@ -72,16 +74,186 @@ export function ClaudeLocalConfigFields({
   ));
 }
 
-export function ClaudeLocalAdvancedFields({
-  section,
+const claudeHomeHelp =
+  "Company: shares one persistent Claude Code config (MCP servers, plugins, skills, settings) across agents. Isolated: legacy per-run config.";
+const nativeMcpHelp =
+  "MCP servers configured in Claude Home run natively and are not governed by Paperclip approvals.";
+
+const permissionModeLabels: Record<ClaudePermissionMode, string> = {
+  bypassPermissions: "Bypass permissions",
+  auto: "Auto",
+  acceptEdits: "Accept edits",
+  dontAsk: "Don't ask",
+  plan: "Plan",
+  manual: "Manual",
+};
+
+function formatToolList(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string").join(", ");
+  }
+  return typeof value === "string" ? value : "";
+}
+
+function parseToolList(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function FieldHelp({ children }: { children: string }) {
+  return <p className="mt-1 text-xs text-muted-foreground">{children}</p>;
+}
+
+type ToolListCreateKey = "claudeAllowedTools" | "claudeDisallowedTools";
+
+/**
+ * Native Claude Code options (Claude Home, native MCP, permission mode, tools,
+ * settings overlay). Rendered as one child so the section partitioner keeps the
+ * group together under its heading.
+ */
+function ClaudeCodeFields({
   isCreate,
   values,
   set,
   config,
   eff,
   mark,
-  managedSandboxOnly,
-}: AdapterConfigFieldsProps) {
+}: AdapterConfigFieldsProps & { configSection?: AdapterConfigSection }) {
+  const claudeHome = isCreate
+    ? values!.claudeHome ?? "company"
+    : eff<unknown>("adapterConfig", "claudeHome", config.claudeHome) === "isolated"
+      ? "isolated"
+      : "company";
+  const nativeMcpEnabled = isCreate
+    ? values!.claudeNativeMcp !== "disabled"
+    : eff<unknown>("adapterConfig", "nativeMcp", config.nativeMcp) !== "disabled";
+  const permissionMode = isCreate
+    ? values!.claudePermissionMode ?? ""
+    : String(eff<unknown>("adapterConfig", "claudePermissionMode", config.claudePermissionMode) ?? "");
+
+  const toolListField = (label: string, createKey: ToolListCreateKey, configKey: string, placeholder: string) => (
+    <Field label={label} hint="Comma-separated Claude Code tool rules.">
+      <DraftInput
+        value={
+          isCreate
+            ? values![createKey] ?? ""
+            : formatToolList(eff<unknown>("adapterConfig", configKey, config[configKey]))
+        }
+        onCommit={(v) => {
+          if (isCreate) {
+            set!({ [createKey]: v });
+            return;
+          }
+          const tools = parseToolList(v);
+          mark("adapterConfig", configKey, tools.length > 0 ? tools : undefined);
+        }}
+        className={inputClass}
+        placeholder={placeholder}
+      />
+    </Field>
+  );
+
+  return (
+    <div className="space-y-3 border-t border-border pt-3" data-testid="claude-code-fields">
+      <h4 className="text-xs font-medium text-foreground">Claude Code</h4>
+      <Field label="Claude Home">
+        <select
+          className={inputClass}
+          value={claudeHome}
+          onChange={(e) => {
+            const value = e.target.value === "isolated" ? "isolated" : "company";
+            isCreate
+              ? set!({ claudeHome: value })
+              : mark("adapterConfig", "claudeHome", value === "company" ? undefined : value);
+          }}
+        >
+          <option value="company">Company (shared)</option>
+          <option value="isolated">Isolated</option>
+        </select>
+        <FieldHelp>{claudeHomeHelp}</FieldHelp>
+      </Field>
+      <div>
+        <ToggleField
+          label="Native MCP servers"
+          checked={nativeMcpEnabled}
+          onChange={(v) =>
+            isCreate
+              ? set!({ claudeNativeMcp: v ? "enabled" : "disabled" })
+              : mark("adapterConfig", "nativeMcp", v ? undefined : "disabled")
+          }
+        />
+        <FieldHelp>{nativeMcpHelp}</FieldHelp>
+      </div>
+      <Field
+        label="Permission mode"
+        hint="Sets Claude Code's --permission-mode. On local runs it replaces the Skip permissions behavior."
+      >
+        <select
+          className={inputClass}
+          value={permissionMode}
+          onChange={(e) => {
+            const value = e.target.value;
+            isCreate
+              ? set!({ claudePermissionMode: value })
+              : mark("adapterConfig", "claudePermissionMode", value || undefined);
+          }}
+        >
+          <option value="">Paperclip default</option>
+          {CLAUDE_PERMISSION_MODES.map((mode) => (
+            <option key={mode} value={mode}>
+              {permissionModeLabels[mode]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="Fallback model" hint="Model Claude Code switches to when the primary model is overloaded.">
+        <DraftInput
+          value={
+            isCreate
+              ? values!.claudeFallbackModel ?? ""
+              : String(eff<unknown>("adapterConfig", "fallbackModel", config.fallbackModel) ?? "")
+          }
+          onCommit={(v) =>
+            isCreate
+              ? set!({ claudeFallbackModel: v })
+              : mark("adapterConfig", "fallbackModel", v.trim() || undefined)
+          }
+          className={inputClass}
+          placeholder="e.g. claude-sonnet-5"
+        />
+      </Field>
+      {toolListField("Allowed tools", "claudeAllowedTools", "allowedTools", "e.g. Read, Bash(git:*)")}
+      {toolListField("Disallowed tools", "claudeDisallowedTools", "disallowedTools", "e.g. WebFetch")}
+      <JsonObjectConfigField
+        isCreate={isCreate}
+        values={values}
+        set={set}
+        config={config}
+        mark={mark}
+        label="Settings overlay JSON"
+        hint="Claude Code settings merged over the Claude Home settings for this agent."
+        createKey="claudeSettingsOverlayJson"
+        configKey="settingsOverlay"
+        placeholder={`{\n  "env": { "FOO": "1" }\n}`}
+      />
+      <FieldHelp>Extra args (Advanced) now apply to both the CLI and ACP engines.</FieldHelp>
+    </div>
+  );
+}
+
+export function ClaudeLocalAdvancedFields(props: AdapterConfigFieldsProps) {
+  const {
+    section,
+    isCreate,
+    values,
+    set,
+    config,
+    eff,
+    mark,
+    managedSandboxOnly,
+  } = props;
   const rawEngine = isCreate
     ? values!.claudeEngine ?? "auto"
     : eff("adapterConfig", "engine", String(config.engine ?? "auto"));
@@ -281,6 +453,7 @@ export function ClaudeLocalAdvancedFields({
           />
         )}
       </Field>
+      <ClaudeCodeFields {...props} configSection="configuration" />
     </>
   ));
 }
