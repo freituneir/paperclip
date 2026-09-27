@@ -27,6 +27,7 @@ import type {
   Approval,
   AgentConfigRevision,
   ClearAgentErrorResponse,
+  ClaudeLaunchManifest,
   AgentApiKeyScope,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
@@ -105,6 +106,11 @@ function agentPath(id: string, companyId?: string, suffix = "") {
 export const agentsApi = {
   list: (companyId: string) => api.get<Agent[]>(`/companies/${companyId}/agents`),
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
+  /** Effective Claude Code setup (launch manifest before a run); 422 for non-claude_local agents. */
+  claudeSetup: (companyId: string, agentId: string) =>
+    api.get<ClaudeLaunchManifest>(
+      `/companies/${encodeURIComponent(companyId)}/agents/${encodeURIComponent(agentId)}/claude-setup`,
+    ),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
   get: async (id: string, companyId?: string) => {

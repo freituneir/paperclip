@@ -215,6 +215,8 @@ export const queryKeys = {
     runtimeState: (id: string) => ["agents", "runtime-state", id] as const,
     taskSessions: (id: string) => ["agents", "task-sessions", id] as const,
     skills: (id: string) => ["agents", "skills", id] as const,
+    claudeSetup: (companyId: string, agentId: string) =>
+      ["agents", companyId, "claude-setup", agentId] as const,
     instructionsBundle: (id: string) =>
       ["agents", "instructions-bundle", id] as const,
     instructionsFile: (id: string, relativePath: string) =>
@@ -706,6 +708,8 @@ export const queryKeys = {
   skills: {
     available: ["skills", "available"] as const,
   },
+  /** The company's shared Claude Code config (CLAUDE_CONFIG_DIR) inventory. */
+  claudeHome: (companyId: string) => ["claude-home", companyId] as const,
   plugins: {
     all: ["plugins"] as const,
     examples: ["plugins", "examples"] as const,

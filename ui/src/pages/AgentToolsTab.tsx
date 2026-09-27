@@ -11,6 +11,8 @@ import type {
 import { Link } from "@/lib/router";
 import { queryKeys } from "../lib/queryKeys";
 import { toolsApi } from "../api/tools";
+import { agentsApi } from "../api/agents";
+import { LaunchManifestCard } from "../components/claude/LaunchManifestCard";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { GithubIcon } from "@/components/icons/github-icon";
@@ -332,6 +334,57 @@ const DENIED_TOOLS_DISPLAY_LIMIT = 30;
  * prompt can narrow the list but never expand it, and the side panel explains
  * which access profiles and rules shape the final list.
  */
+function describeLoadError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  return "Something went wrong.";
+}
+
+/** Claude Code effective setup (what the next run will launch with), claude_local only. */
+function ClaudeEffectiveSetupSection({ agentId, companyId }: { agentId: string; companyId: string }) {
+  const setup = useQuery({
+    queryKey: queryKeys.agents.claudeSetup(companyId, agentId),
+    queryFn: () => agentsApi.claudeSetup(companyId, agentId),
+  });
+
+  return (
+    <section className="rounded-lg border border-border bg-card" aria-labelledby="claude-effective-setup-heading">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2.5">
+        <div className="min-w-0">
+          <h3 id="claude-effective-setup-heading" className="text-sm font-semibold text-foreground">
+            Effective setup
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            What Claude Code will launch with on this agent&apos;s next run.
+          </p>
+        </div>
+        <Button asChild variant="outline" size="sm">
+          <Link to="/claude-home">Edit Claude Home</Link>
+        </Button>
+      </div>
+      <div className="px-3 py-3">
+        {setup.isLoading ? (
+          <p className="text-xs text-muted-foreground">Resolving Claude Code setup…</p>
+        ) : setup.error ? (
+          <InlineBanner
+            tone="danger"
+            compact
+            title="Could not load the effective setup"
+            actions={
+              <Button variant="outline" size="sm" onClick={() => void setup.refetch()}>
+                Retry
+              </Button>
+            }
+          >
+            {describeLoadError(setup.error)}
+          </InlineBanner>
+        ) : setup.data ? (
+          <LaunchManifestCard manifest={setup.data} compact />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; companyId: string }) {
   const queryClient = useQueryClient();
   const [installDraft, setInstallDraft] = useState<Record<string, boolean>>({});
@@ -561,6 +614,10 @@ export function AgentToolsTab({ agent, companyId }: { agent: AgentDetailRecord; 
 
   return (
     <div className="space-y-4">
+      {agent.adapterType === "claude_local" ? (
+        <ClaudeEffectiveSetupSection agentId={agent.id} companyId={companyId} />
+      ) : null}
+
       <EnforcementBanner
         tone="info"
         title="Effective access"

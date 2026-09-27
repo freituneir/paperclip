@@ -40,6 +40,7 @@ import { getUIAdapter, buildTranscript, onAdapterChange } from "../adapters";
 import { StatusBadge } from "../components/StatusBadge";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
+import { LaunchManifestCard } from "../components/claude/LaunchManifestCard";
 import { IssueRow } from "../components/IssueRow";
 import { StatusGlyph } from "../components/StatusGlyph";
 import { MembershipAction } from "../components/MembershipAction";
@@ -107,6 +108,7 @@ import {
   type HeartbeatRun,
   type HeartbeatRunEvent,
   type AgentRuntimeState,
+  type ClaudeLaunchManifest,
   type Issue,
   type LiveEvent,
   type WorkspaceOperation,
@@ -429,13 +431,22 @@ export function runDetailRefetchIntervalMs(status: HeartbeatRun["status"]): 5000
   return false;
 }
 
+function readLaunchManifest(payload: Record<string, unknown>): ClaudeLaunchManifest | null {
+  const manifest = payload.launchManifest;
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return null;
+  return (manifest as { version?: unknown }).version === 1 ? (manifest as ClaudeLaunchManifest) : null;
+}
+
 export function RunInvocationCard({
   payload,
   censorUsernameInLogs,
+  sessionId,
 }: {
   payload: Record<string, unknown>;
   censorUsernameInLogs: boolean;
+  sessionId?: string | null;
 }) {
+  const launchManifest = readLaunchManifest(payload);
   const rawCommandLine = [
     typeof payload.command === "string" ? payload.command : null,
     ...(Array.isArray(payload.commandArgs)
@@ -462,6 +473,7 @@ export function RunInvocationCard({
       {typeof payload.cwd === "string" && (
         <div className="text-xs break-all"><span className="text-muted-foreground">Working dir: </span><span className="font-mono">{payload.cwd}</span></div>
       )}
+      {launchManifest && <LaunchManifestCard manifest={launchManifest} sessionId={sessionId} />}
       {hasAdvancedDetails && (
         <Collapsible>
           <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -4288,7 +4300,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         censorUsernameInLogs={censorUsernameInLogs}
       />
       {adapterInvokePayload && (
-        <RunInvocationCard payload={adapterInvokePayload} censorUsernameInLogs={censorUsernameInLogs} />
+        <RunInvocationCard
+          payload={adapterInvokePayload}
+          censorUsernameInLogs={censorUsernameInLogs}
+          sessionId={run.sessionIdAfter ?? run.sessionIdBefore ?? null}
+        />
       )}
 
       <div className="flex items-center justify-between">
