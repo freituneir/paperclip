@@ -147,6 +147,26 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
   Agents without a managed connection need that login too: the run logs
   "Claude Home has no login" until you do it. Paperclip never copies OAuth
   credentials, because copied refresh tokens break when one copy rotates.
+- **Terminal parity:** Claude Home has tabs that mirror Claude Code's
+  `/mcp` and `/plugin`. The server runs the real `claude` CLI against the home
+  (no shell, no credentials passed).
+  - **MCP:** every server Claude reports (Claude Code / plugin / claude.ai /
+    project) with live health. You can add and remove servers, and sign in to
+    OAuth servers with the paste-the-redirect-URL flow.
+  - **Plugins:** Discover (from each marketplace's catalog), Installed
+    (enable, disable, update, uninstall, details) and Marketplaces (add
+    `owner/repo`, update, remove).
+  - Paperclip-governed connectors are listed alongside.
+- **Models:** the agent model picker lists the models **Claude itself
+  reports** for the account after an agent's first ACP run. They are saved in
+  `claude-home/.paperclip-models.json`. The built-in list is only a fallback and
+  its entries are marked unverified.
+- **ACP's bundled Claude:** the ACP engine runs the Claude binary bundled with
+  the Agent SDK. It is pinned in root `package.json` `pnpm.overrides`, now
+  0.3.283 / Claude Code 2.1.283. If a run fails with "Claude Code X does not
+  support this model", bump that override.
+- **Dashboard:** agent cards show todo checklists and subagent labels. An agent
+  that is waiting on an approval shows **Waiting for you**, with the card inline.
 - **Take over a run:** the run page shows
   `cd '<cwd>' && CLAUDE_CONFIG_DIR='<home>' claude --resume <session>`. Run it
   inside the container (prefix as above) to continue the agent's session in real
