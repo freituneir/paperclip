@@ -344,6 +344,7 @@ export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export * from "./types/chat-channels.js";
 export * from "./types/claude-home.js";
+export * from "./types/claude-cli.js";
 export * from "./validators/chat-channels.js";
 export {
   humanizeConnectionDisplayName,
