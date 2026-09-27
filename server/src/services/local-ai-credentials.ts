@@ -7,6 +7,30 @@ import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapt
 import type { AiProvider } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
+/**
+ * Long-lived tokens from `claude setup-token` are inference-only: Anthropic's
+ * usage endpoint answers 403 (authenticated, missing scope) where an invalid or
+ * expired token gets 401. Accept that 403 so self-hosted instances can store a
+ * one-year token instead of `claude auth login`'s short-lived access token,
+ * which expires within hours because its refresh token is not kept.
+ */
+async function isClaudeSetupTokenWithoutUsageScope(token: string): Promise<boolean> {
+  const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
+    headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" },
+    redirect: "error", signal: AbortSignal.timeout(15000),
+  });
+  await response.body?.cancel();
+  return response.status === 403;
+}
+
+async function verifyClaudeToken(token: string): Promise<void> {
+  try {
+    await fetchClaudeQuota(token);
+  } catch (error) {
+    if (!(await isClaudeSetupTokenWithoutUsageScope(token).catch(() => false))) throw error;
+  }
+}
+
 /** Read an owned login home, or an explicitly authorized local-operator import. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
@@ -30,7 +54,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
         token = await readClaudeToken({ allowKeychain: true });
       }
       if (!token) throw new Error("Missing login");
-      await fetchClaudeQuota(token);
+      await verifyClaudeToken(token);
       return token;
     }
     if (provider === "openai") {
