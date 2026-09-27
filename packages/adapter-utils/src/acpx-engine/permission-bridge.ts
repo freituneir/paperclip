@@ -191,9 +191,10 @@ export function createAcpxPermissionHandler(input: {
     if (input.runSignal.aborted) return failClosed(request.toolCallId, true);
     await emit(
       "permission.requested",
+      // Never the title or input: for Bash the title is the command, and run
+      // events are not run-secret redacted (the server-side card is).
       {
         toolName: request.toolName,
-        title: request.title,
         kind: request.kind,
         toolCallId: request.toolCallId,
       },

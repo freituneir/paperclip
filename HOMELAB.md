@@ -134,6 +134,9 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
     engine, and answers from Telegram or plugins, which are refused.
   - Agents can't create or answer these cards.
   - Per agent: *Approval cards for ask rules* (on by default) and a wait time.
+  - This is a real guardrail only in `authenticated` mode, which this
+    deployment uses. In `local_trusted` an agent could approve itself
+    through the unauthenticated local API.
 - **Native editing:** the real CLI is the power editor. Plugins, OAuth MCP
   logins and `claude mcp add` all write straight into the home:
   ```

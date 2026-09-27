@@ -126,12 +126,14 @@ describe("createAcpxPermissionHandler", () => {
     expect(opts.waitMs).toBe(30_000);
     expect(opts.signal).toBeInstanceOf(AbortSignal);
     expect(events.map((event) => event.eventType)).toEqual(["permission.requested", "permission.resolved"]);
+    // No title: for Bash it is the command itself, which can carry secrets, and
+    // run events are not run-secret redacted (the approval card is).
     expect(events[0]?.payload).toEqual({
       toolName: "Bash",
-      title: "git push origin main",
       kind: "execute",
       toolCallId: "tool-1",
     });
+    expect(JSON.stringify(events)).not.toContain("git push origin main");
     expect(events[1]?.payload).toEqual({ toolCallId: "tool-1", outcome: "allow_once", source: "host" });
     expect(JSON.stringify(events)).not.toContain("secret-token");
   });

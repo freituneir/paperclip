@@ -160,3 +160,11 @@ requestPermission?: (request: AdapterPermissionRequest, opts: { signal: AbortSig
   the manifest warns.
 - **Behavior change:** an `ask` rule on a run without a task is now denied, the
   same as headless Claude. It used to be auto-approved.
+- **Limitation, `local_trusted` deployment mode:** there, requests without auth
+  are treated as the local board admin. An agent that can reach the API over
+  localhost could accept its own card, so the bridge is **not a security
+  boundary in `local_trusted`**. Use `authenticated` mode, as the homelab
+  deployment does, to rely on it.
+- Run events (`permission.requested`) carry the tool name, kind and toolCallId
+  only. They never carry the title or input, because for Bash the title is the
+  command and run events are not run-secret redacted.
