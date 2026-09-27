@@ -50,11 +50,37 @@ describe("explicit local subscription import", () => {
     expect(mocks.readFile).toHaveBeenCalledWith("/isolated/grok/auth.json", "utf8");
     expect(fetch).toHaveBeenCalledWith("https://api.x.ai/v1/models", expect.objectContaining({ redirect: "error" }));
   });
+  it("accepts a long-lived setup token that the usage endpoint refuses with 403", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-setup-fixture" } }));
+    mocks.claudeQuota.mockRejectedValue(new Error("anthropic usage api returned 403"));
+    const fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 403 })); vi.stubGlobal("fetch", fetch);
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("sk-ant-oat01-setup-fixture");
+    expect(fetch).toHaveBeenCalledWith("https://api.anthropic.com/api/oauth/usage", expect.objectContaining({
+      headers: { Authorization: "Bearer sk-ant-oat01-setup-fixture", "anthropic-beta": "oauth-2025-04-20" },
+      redirect: "error",
+    }));
+  });
+  it("still rejects an expired or invalid Claude token (401) and unreachable verification", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-expired" } }));
+    mocks.claudeQuota.mockRejectedValue(new Error("anthropic usage api returned 401"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+  });
+  it("does not probe again when the normal usage check succeeds", async () => {
+    mocks.credentialFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-login" } }));
+    mocks.claudeQuota.mockResolvedValue([]);
+    const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("sk-ant-oat01-login");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("rejects missing and invalid logins with actionable, redacted errors", async () => {
     mocks.claude.mockResolvedValue(null);
     await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow("claude auth login");
     mocks.claude.mockResolvedValue("fixture-secret");
     mocks.claudeQuota.mockRejectedValue(new Error("credential fixture-secret rejected"));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
     await expect(readVerifiedLocalAiCredential("anthropic")).rejects.toThrow(/^Could not verify the local subscription\. Run claude auth login in a terminal on the machine running Paperclip, then try Connect again\.$/);
     mocks.codex.mockResolvedValue({ accessToken: "incomplete" });
     await expect(readVerifiedLocalAiCredential("openai", "/isolated/login")).rejects.toThrow("sign-in command shown");
