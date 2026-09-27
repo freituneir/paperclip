@@ -57,15 +57,19 @@ branch (based on `d554c47`) so it can be proposed upstream or dropped cleanly.
   expires. Upstream's setup-token flow (one-year token) only works in sandbox
   environments. Its Connect check requires Anthropic's usage endpoint to return
   200, but setup tokens are inference-only and get **403**.
-- **Change:** keep upstream's quota check first; if it fails, accept the token
-  only if the usage endpoint answers **403** (authenticated, missing scope).
-  401 (invalid/expired) and network errors are still rejected.
+- **Change:** keep upstream's quota check first; if it fails, probe the usage
+  endpoint once: **403** (authenticated, missing scope) → accepted. **429**
+  (rate limited — the connection screen's polling triggers ~1 h limits) →
+  verify by running one tiny `claude -p` prompt with the token in a throwaway
+  config dir; accepted only if Claude answers. 401 (invalid/expired), failed
+  prompts and network errors are still rejected.
 - **Helper:** `scripts/homelab/claude-setup-token-login.sh` (in the image at
   `/app/scripts/homelab/…`) runs `claude setup-token`, checks the token with a
   one-word prompt, and writes it where the Connect button looks.
 - **Tests:** `server/src/__tests__/local-ai-credentials.test.ts` (setup token
-  accepted on 403; 401 and network failure rejected; no extra probe when the
-  normal check passes). The new test fails without the fix.
+  accepted on 403; accepted on 429 only when a Claude prompt succeeds; 401,
+  failed prompt and network failure rejected; no extra probe when the normal
+  check passes). The new tests fail without the fix.
 
 #### Connecting (or re-connecting) Claude with a setup token
 
